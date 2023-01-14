@@ -36,7 +36,7 @@ Synopsis: `sc <trigger> [x.x.x.x|x:x::x]/y {next|prev|sub|sup|/YY} {<level>}`
 Simple clone to Albert plugin directory and activate in Albert Python Modules Settings. Python3 and uses the ipaddress.
 ```
 pip3 install ipaddress
-git clone https://github.com/Bierchermuesli/albert-subnetcalc.git ~/.local/share/albert/org.albert.extension.python/modules/subnetcalc
+git clone  git@github.com:Bierchermuesli/albert-subnetcalc.git  ~/.local/share/albert/python/subnetcalc
 ```
 # Bugs / Feedback
 always welcome, just some ad hoc coding

@@ -1,0 +1,105 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<svg
+   width="32"
+   height="32"
+   viewBox="0 0 8.4666667 8.4666667"
+   version="1.1"
+   id="svg8"
+   sodipodi:docname="ipvunknown.svg"
+   inkscape:version="1.1.2 (0a00cf5339, 2022-02-04)"
+   xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
+   xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
+   xmlns:xlink="http://www.w3.org/1999/xlink"
+   xmlns="http://www.w3.org/2000/svg"
+   xmlns:svg="http://www.w3.org/2000/svg"
+   xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+   xmlns:cc="http://creativecommons.org/ns#"
+   xmlns:dc="http://purl.org/dc/elements/1.1/">
+  <sodipodi:namedview
+     pagecolor="#ffffff"
+     bordercolor="#666666"
+     borderopacity="1"
+     objecttolerance="10"
+     gridtolerance="10"
+     guidetolerance="10"
+     inkscape:pageopacity="0"
+     inkscape:pageshadow="2"
+     inkscape:window-width="2560"
+     inkscape:window-height="1380"
+     id="namedview884"
+     showgrid="false"
+     inkscape:zoom="18.848815"
+     inkscape:cx="-1.9629881"
+     inkscape:cy="15.438636"
+     inkscape:window-x="1920"
+     inkscape:window-y="1120"
+     inkscape:window-maximized="1"
+     inkscape:current-layer="svg8"
+     inkscape:pagecheckerboard="0" />
+  <defs
+     id="defs2">
+    <linearGradient
+       inkscape:collect="always"
+       id="linearGradient1960">
+      <stop
+         style="stop-color:#808080;stop-opacity:1;"
+         offset="0"
+         id="stop1956" />
+      <stop
+         style="stop-color:#ececec;stop-opacity:1"
+         offset="1"
+         id="stop1958" />
+    </linearGradient>
+    <linearGradient
+       inkscape:collect="always"
+       xlink:href="#linearGradient1960"
+       id="linearGradient1962"
+       x1="2.4777246"
+       y1="0.43112823"
+       x2="7.9063783"
+       y2="8.1070833"
+       gradientUnits="userSpaceOnUse" />
+  </defs>
+  <metadata
+     id="metadata5">
+    <rdf:RDF>
+      <cc:Work
+         rdf:about="">
+        <dc:format>image/svg+xml</dc:format>
+        <dc:type
+           rdf:resource="http://purl.org/dc/dcmitype/StillImage" />
+      </cc:Work>
+    </rdf:RDF>
+  </metadata>
+  <rect
+     style="fill:url(#linearGradient1962);fill-opacity:1;fill-rule:nonzero;stroke:#ffffff;stroke-width:0.02677898;stroke-miterlimit:4;stroke-dasharray:none;stroke-opacity:1"
+     id="rect890"
+     width="8.239706"
+     height="8.1819906"
+     x="0.11348033"
+     y="0.14233804"
+     ry="1.1503677" />
+  <text
+     xml:space="preserve"
+     style="font-style:normal;font-weight:normal;font-size:3.19325px;line-height:1.25;font-family:sans-serif;letter-spacing:0px;word-spacing:0px;fill:#000000;fill-opacity:1;stroke:#fffff7;stroke-width:0.0446382;stroke-miterlimit:4;stroke-dasharray:none;stroke-opacity:1"
+     x="-0.19593374"
+     y="4.2542019"
+     id="text817-3"
+     transform="scale(0.70746839,1.4134907)"><tspan
+       id="tspan815-6"
+       x="-0.19593374"
+       y="4.2542019"
+       style="font-size:3.45935px;stroke:#fffff7;stroke-width:0.0446382;stroke-miterlimit:4;stroke-dasharray:none;stroke-opacity:1" /></text>
+  <text
+     xml:space="preserve"
+     style="font-style:normal;font-weight:normal;font-size:4.6119px;line-height:1.25;font-family:sans-serif;letter-spacing:0px;word-spacing:0px;fill:#000000;fill-opacity:1;stroke:none;stroke-width:0.115298"
+     x="0.27902791"
+     y="5.0763173"
+     id="text888"
+     transform="scale(0.80203215,1.2468328)"><tspan
+       sodipodi:role="line"
+       id="tspan886"
+       x="0.27902791"
+       y="5.0763173"
+       style="stroke-width:0.115298">IPv?</tspan></text>
+</svg>
