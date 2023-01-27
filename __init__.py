@@ -34,6 +34,7 @@ md_license = "MIT"
 md_url = "https://github.com/Bierchermuesli/albert-subnetcalc"
 md_maintainers = "@Bierchermuesli"
 md_lib_dependencies = ["ipaddress"]
+md_synopsis = "foobar"
 
 
 ordinal = lambda n: "%d%s" % (n,"tsnrhtdd"[(n//10%10!=1)*(n%10<4)*n%10::4])
@@ -56,21 +57,21 @@ class Plugin(QueryHandler):
         if query.isValid:
             
             addr = ""
-            # debug("icon self"+str([os.path.dirname(__file__)+"/ipv"+str(addr.vsersion)+".svg"]))
-            # debug("icon"+icon)
+            md_id = "unknown"
+            icon = [os.path.dirname(__file__)+"/ipvunknown.svg"]
 
             debug("Subnetcal checking: "+ str(query.string.split()))
 
             try:
                 addr = ipaddress.ip_network(query.string.split()[0],strict=False)
                 icon = [os.path.dirname(__file__)+"/ipv"+str(addr.version)+".svg"]
+                md_id = "ipv"+str(addr.version)
             except:
                 debug("Subnetcal failed: "+ query.string)
-                icon = [os.path.dirname(__file__)+"/ipvunknown.svg"]
 
-            debug("Version: "+ str(addr.version))
-            debug("icon self"+str([os.path.dirname(__file__)+"/ipv"+str(addr.version)+".svg"]))
+                
 
+            
             #without any args
             if addr:
                 if len(query.string.split()) ==1:
@@ -194,8 +195,9 @@ class Plugin(QueryHandler):
                         if level > (addr.max_prefixlen-addr.prefixlen):
                             level =  addr.max_prefixlen-addr.prefixlen
                             query.add(Item(
-                                    icon = icon
-                                    ,text = "we can't go lower than /{} - {} level ".format(addr.max_prefixlen,ordinal(level))))
+                                    icon = icon,
+                                    id = "unknown",
+                                    text = "we can't go lower than /{} - {} level ".format(addr.max_prefixlen,ordinal(level))))
 
                         for idx,i in enumerate(addr.subnets(prefixlen_diff=level)):
                             query.add(Item(
@@ -214,6 +216,7 @@ class Plugin(QueryHandler):
                             level = addr.prefixlen
                             query.add(Item(
                                 icon = icon,
+                                id = "unknown",
                                 text = "we can't go higher than /0 - {} level".format(ordinal(level))))
 
                         for i in range(int(addr.prefixlen) - 8 - level):
@@ -264,7 +267,8 @@ class Plugin(QueryHandler):
                                 ]
                         )) 
             else:
-                query.add(Item(id=md_id,
+                query.add(Item(
+                    id="unknown",
                     text="no valid IPv4/IPv6 Adress/Subnet",
                     icon = icon,
                     subtext="Query was: %s" % query.string))
