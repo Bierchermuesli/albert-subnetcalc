@@ -58,7 +58,7 @@ class Plugin(QueryHandler):
             
             addr = ""
             md_id = "unknown"
-            icon = [os.path.dirname(__file__)+"/ipvunknown.svg"]
+            icon = [os.path.dirname(__file__)+"/icon.svg"]
 
             debug("Subnetcal checking: "+ str(query.string.split()))
 
