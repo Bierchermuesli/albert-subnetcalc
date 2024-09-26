@@ -25,10 +25,9 @@ from pathlib import Path
 import ipaddress
 import re
 
-md_iid = "2.1"
-md_version = "1.4"
+md_iid = "2.3"
+md_version = "1.5"
 md_name = "SubnetCalc"
-md_id = "sc"
 md_description = "Calculate IPv4/IPv6 Subnets"
 md_license = "MIT"
 md_url = "https://github.com/Bierchermuesli/albert-subnetcalc"
@@ -39,16 +38,18 @@ md_lib_dependencies = ["ipaddress"]
 ordinal = lambda n: "%d%s" % (n, "tsnrhtdd"[(n // 10 % 10 != 1) * (n % 10 < 4) * n % 10 :: 4])
 
 
-class Plugin(PluginInstance, GlobalQueryHandler):
+class Plugin(PluginInstance, TriggerQueryHandler):
     def __init__(self):
-        GlobalQueryHandler.__init__(self, id=md_id, name=md_name, description=md_description, defaultTrigger="sc ", synopsis="[x.x.x.x|x:x::x]/y {next|prev|sub|sup|/YY} {<level>}")
-        PluginInstance.__init__(self, extensions=[self])
+        PluginInstance.__init__(self)
+        TriggerQueryHandler.__init__(
+            self, self.id, self.name, self.description,
+            defaultTrigger='sc '
+        )
 
     # default types
     def handleTriggerQuery(self, query):
         if query.isValid:
-            addr = ""
-            md_id = "unknown"
+            addr = False
 
             debug("Subnetcal checking: " + str(query.string.split()))
             icon = [f"file:{Path(__file__).parent}/icon.svg"]
@@ -67,6 +68,8 @@ class Plugin(PluginInstance, GlobalQueryHandler):
                     if (addr.version == 4 and addr.prefixlen == 32) or (addr.version == 6 and addr.prefixlen == 128):
                         subtext = f"IPv{addr.version} Host"
                         addr.is_host = True
+                        addr.hex = addr.hosts()[0].packed.hex()
+                        addr.bin = ''.join(f'{byte:08b}' for byte in addr.hosts()[0].packed)
                     else:
                         subtext = f"IPv{addr.version} Net"
                         addr.is_host = False
@@ -93,7 +96,11 @@ class Plugin(PluginInstance, GlobalQueryHandler):
                                     text=str(addr),
                                     iconUrls=icon,
                                     subtext=subtext,
-                                    actions=[Action("revere", f"Reverse Pointer {addr.reverse_pointer}", lambda: setClipboardText(str(addr.reverse_pointer)))],
+                                    actions=[
+                                        Action("reverse", f"Reverse Pointer {addr.reverse_pointer}", lambda: setClipboardText(str(addr.reverse_pointer))),
+                                        Action("hex", f"Hex {addr.hex}", lambda: setClipboardText(str(addr.hex))),
+                                        Action("bin", f"Bin {addr.bin}", lambda: setClipboardText(str(addr.bin)))
+                                        ],
                                 )
                             )
                         else:
@@ -111,6 +118,8 @@ class Plugin(PluginInstance, GlobalQueryHandler):
                                         Action("broadcast", f"Broadcast {addr.broadcast_address}", lambda: setClipboardText(str(addr.broadcast_address))),
                                         Action("wildcard", f"Widlcard {addr.hostmask}", lambda: setClipboardText(str(addr.hostmask))),
                                         Action("max", f"Max Addr {addr.num_addresses}", lambda: setClipboardText(str(addr.num_addresses))),
+                                        Action("networkhex", f"Network Hex {addr.network_address.packed.hex()}", lambda: setClipboardText(str(addr.network_address.packed.hex()))),
+                                        Action("netmaskhex", f"Mask Hex {addr.netmask.packed.hex()} (= /{addr.prefixlen})", lambda: setClipboardText(str(addr.netmask.packed.hex()))),
                                     ],
                                 )
                             )
@@ -126,13 +135,14 @@ class Plugin(PluginInstance, GlobalQueryHandler):
                                         Action("reverse", f"Reverse Pointer {addr.reverse_pointer}", lambda: setClipboardText(str(addr.reverse_pointer))),
                                         Action("compressed", f"Compressed {addr.compressed}", lambda: setClipboardText(str(addr.compressed))),
                                         Action("exploded", f"Exploded {addr.exploded}", lambda: setClipboardText(str(addr.exploded))),
+                                        Action("hex", f"Hex {addr.hex}", lambda: setClipboardText(str(addr.hex))),
+                                        Action("bin", f"Bin {addr.bin}", lambda: setClipboardText(str(addr.bin)))
                                     ],
                                 )
                             )
 
                         else:
                             subtext += f", contains {2 ** (64 - addr.prefixlen)} /64"
-
                             query.add(
                                 StandardItem(
                                     text=str(addr),
@@ -146,6 +156,9 @@ class Plugin(PluginInstance, GlobalQueryHandler):
                                         Action("netmask", f"Netmask {addr.netmask} (= /{addr.prefixlen})", lambda: setClipboardText(str(addr.netmask))),
                                         Action("wildcard", f"Widlcard {addr.hostmask}", lambda: setClipboardText(str(addr.hostmask))),
                                         Action("max", f"Max Addr {addr.num_addresses}", lambda: setClipboardText(str(addr.num_addresses))),
+                                        Action("networkhex", f"Network Hex {addr.network_address.packed.hex()}", lambda: setClipboardText(str(addr.network_address.packed.hex()))),
+                                        Action("netmaskhex", f"Mask Hex {addr.netmask.packed.hex()} (= /{addr.prefixlen})", lambda: setClipboardText(str(addr.netmask.packed.hex()))),                                        
+
                                     ],
                                 )
                             )
@@ -157,7 +170,7 @@ class Plugin(PluginInstance, GlobalQueryHandler):
 
                     # <trigger> x.x.x.x |next|prev|sub|sup {#}
                     # Check if NEXT,PREVIOUS SUBneting and SUPerneting with optional desired level
-                    if match := re.match("\S+\s+(sub|sup|next|prev)\s*(\d*)", query.string):
+                    if match := re.match(r"\S+\s+(sub|sup|next|prev)\s*(\d*)", query.string):
                         mode = match.groups()[0]
                         # default one level
                         if match.groups()[1]:
@@ -166,7 +179,7 @@ class Plugin(PluginInstance, GlobalQueryHandler):
                             level = 1
                     # <trigger> x.x.x.x /YY
                     # if desired subnet as CIDR is supplied
-                    elif match := re.match("\S+\s/(\d+)", query.string):
+                    elif match := re.match(r"\S+\s/(\d+)", query.string):
                         loookfor = int(match.groups()[0])
 
                         debug("Looking for: /" + str(loookfor))
