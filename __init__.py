@@ -25,8 +25,8 @@ from pathlib import Path
 import ipaddress
 import re
 
-md_iid = "2.3"
-md_version = "1.5"
+md_iid = "3.0"
+md_version = "1.6"
 md_name = "SubnetCalc"
 md_description = "Calculate IPv4/IPv6 Subnets"
 md_license = "MIT"
@@ -41,10 +41,10 @@ ordinal = lambda n: "%d%s" % (n, "tsnrhtdd"[(n // 10 % 10 != 1) * (n % 10 < 4) *
 class Plugin(PluginInstance, TriggerQueryHandler):
     def __init__(self):
         PluginInstance.__init__(self)
-        TriggerQueryHandler.__init__(
-            self, self.id, self.name, self.description,
-            defaultTrigger='sc '
-        )
+        TriggerQueryHandler.__init__(self)
+
+    def defaultTrigger(self):
+        return "sc "
 
     # default types
     def handleTriggerQuery(self, query):
