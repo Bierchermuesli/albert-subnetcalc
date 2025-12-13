@@ -25,13 +25,14 @@ from pathlib import Path
 import ipaddress
 import re
 
-md_iid = "3.0"
-md_version = "1.6"
+md_iid = "4.0"
+md_version = "2.0"
 md_name = "SubnetCalc"
 md_description = "Calculate IPv4/IPv6 Subnets"
 md_license = "MIT"
 md_url = "https://github.com/Bierchermuesli/albert-subnetcalc"
 md_maintainers = "@Bierchermuesli"
+md_authors = "@Bierchermuesli"
 md_lib_dependencies = ["ipaddress"]
 
 
@@ -39,236 +40,193 @@ ordinal = lambda n: "%d%s" % (n, "tsnrhtdd"[(n // 10 % 10 != 1) * (n % 10 < 4) *
 
 
 class Plugin(PluginInstance, TriggerQueryHandler):
+    _num_results = 10
+
     def __init__(self):
         PluginInstance.__init__(self)
         TriggerQueryHandler.__init__(self)
+        self._init_configuration()
+
+    @property
+    def num_results(self):
+        return self._num_results
+
+    @num_results.setter
+    def num_results(self, value):
+        self._num_results = value
+        self.writeConfig("num_results", value)
+
+    def _init_configuration(self):
+        conf = self.readConfig("num_results", int)
+        if conf is None:
+            self.writeConfig("num_results", self._num_results)
+        else:
+            self._num_results = conf
+
+    def configWidget(self):
+        return [
+            {
+                "type": "label",
+                "text": __doc__,
+            },
+            {
+                "type": "spinbox",
+                "label": "Number of results for next/prev",
+                "property": "num_results",
+                "widget_properties": {"minimum": 1, "maximum": 50}
+            },
+            {
+                "type": "label",
+                "text": "The number of subnets to calculate and show for the 'next' and 'prev' commands."
+            }
+        ]
 
     def defaultTrigger(self):
         return "sc "
 
     # default types
     def handleTriggerQuery(self, query):
-        if query.isValid:
-            addr = False
+        if not query.isValid:
+            return
 
-            debug("Subnetcal checking: " + str(query.string.split()))
-            icon = [f"file:{Path(__file__).parent}/icon.svg"]
-            # icon = [f"gen:?text=IPv?&fontscalar=0.3"]
+        addr = None
+        icon_path = Path(__file__).parent / "icon.svg"
 
-            try:
-                addr = ipaddress.ip_network(query.string.split()[0], strict=False)
-                icon = [f"file:{Path(__file__).parent}/ipv{addr.version}.svg"]
-                # icon = [f"gen:?text=IPv{addr.version}&fontscalar=0.3"]
-            except:
-                debug("Subnetcal failed: " + query.string)
+        try:
+            addr = ipaddress.ip_network(query.string.split()[0], strict=False)
+            icon_path = Path(__file__).parent / f"ipv{addr.version}.svg"
+        except:
+            debug(f"Subnetcal failed to parse: {query.string}")
 
-            # without any args
-            if addr:
-                if len(query.string.split()) == 1:
-                    if (addr.version == 4 and addr.prefixlen == 32) or (addr.version == 6 and addr.prefixlen == 128):
-                        subtext = f"IPv{addr.version} Host"
-                        addr.is_host = True
-                        addr.hex = addr.hosts()[0].packed.hex()
-                        addr.bin = ''.join(f'{byte:08b}' for byte in addr.hosts()[0].packed)
-                    else:
-                        subtext = f"IPv{addr.version} Net"
-                        addr.is_host = False
+        if not addr:
+            query.add(StandardItem(
+                id=md_name,
+                text="No valid IPv4/IPv6 address/subnet",
+                subtext=f"Query was: {query.string}",
+                icon_factory=lambda p=icon_path: makeImageIcon(str(p))
+            ))
+            return
 
-                    if addr.is_loopback:
-                        subtext += " Loopback"
-                    if addr.is_global:
-                        subtext += " Global"
-                    if addr.is_private:
-                        subtext += " Private"
-                    if addr.is_multicast:
-                        subtext += " Multicast"
-                    if addr.is_multicast:
-                        subtext += " Multicast"
-                    if addr.is_reserved:
-                        subtext += " Reserved"
-                    if addr.is_unspecified:
-                        subtext += " Unspecified"
+        # --- Handle simple query (single address/network) ---
+        if len(query.string.split()) == 1:
+            is_host = (addr.version == 4 and addr.prefixlen == 32) or \
+                      (addr.version == 6 and addr.prefixlen == 128)
 
-                    if addr.version == 4:
-                        if addr.is_host:
-                            query.add(
-                                StandardItem(
-                                    text=str(addr),
-                                    iconUrls=icon,
-                                    subtext=subtext,
-                                    actions=[
-                                        Action("reverse", f"Reverse Pointer {addr.reverse_pointer}", lambda: setClipboardText(str(addr.reverse_pointer))),
-                                        Action("hex", f"Hex {addr.hex}", lambda: setClipboardText(str(addr.hex))),
-                                        Action("bin", f"Bin {addr.bin}", lambda: setClipboardText(str(addr.bin)))
-                                        ],
-                                )
-                            )
-                        else:
-                            subtext += f", max hosts {addr.num_addresses}"
-                            query.add(
-                                StandardItem(
-                                    text=str(addr),
-                                    subtext=subtext,
-                                    iconUrls=icon,
-                                    actions=[
-                                        Action("network", f"Network {addr.network_address}", lambda: setClipboardText(str(addr.network_address))),
-                                        Action("netmask", f"Netmask {addr.netmask} (= /{addr.prefixlen})", lambda: setClipboardText(str(addr.netmask))),
-                                        Action("first", f"First {addr.network_address + 1}", lambda: setClipboardText(str(addr.network_address + 1))),
-                                        Action("last", f"Last {addr.broadcast_address - 1}", lambda: setClipboardText(str(addr.broadcast_address - 1))),
-                                        Action("broadcast", f"Broadcast {addr.broadcast_address}", lambda: setClipboardText(str(addr.broadcast_address))),
-                                        Action("wildcard", f"Widlcard {addr.hostmask}", lambda: setClipboardText(str(addr.hostmask))),
-                                        Action("max", f"Max Addr {addr.num_addresses}", lambda: setClipboardText(str(addr.num_addresses))),
-                                        Action("networkhex", f"Network Hex {addr.network_address.packed.hex()}", lambda: setClipboardText(str(addr.network_address.packed.hex()))),
-                                        Action("netmaskhex", f"Mask Hex {addr.netmask.packed.hex()} (= /{addr.prefixlen})", lambda: setClipboardText(str(addr.netmask.packed.hex()))),
-                                    ],
-                                )
-                            )
-                    # for ipv6
-                    else:
-                        if addr.is_host:
-                            query.add(
-                                StandardItem(
-                                    text=str(addr),
-                                    iconUrls=icon,
-                                    subtext=subtext,
-                                    actions=[
-                                        Action("reverse", f"Reverse Pointer {addr.reverse_pointer}", lambda: setClipboardText(str(addr.reverse_pointer))),
-                                        Action("compressed", f"Compressed {addr.compressed}", lambda: setClipboardText(str(addr.compressed))),
-                                        Action("exploded", f"Exploded {addr.exploded}", lambda: setClipboardText(str(addr.exploded))),
-                                        Action("hex", f"Hex {addr.hex}", lambda: setClipboardText(str(addr.hex))),
-                                        Action("bin", f"Bin {addr.bin}", lambda: setClipboardText(str(addr.bin)))
-                                    ],
-                                )
-                            )
-
-                        else:
-                            subtext += f", contains {2 ** (64 - addr.prefixlen)} /64"
-                            query.add(
-                                StandardItem(
-                                    text=str(addr),
-                                    subtext=subtext,
-                                    iconUrls=icon,
-                                    actions=[
-                                        Action("network", f"Network {addr.network_address}", lambda: setClipboardText(str(addr.network_address))),
-                                        Action("compressed", f"Compressed {addr.compressed}", lambda: setClipboardText(str(addr.compressed))),
-                                        Action("exploded", f"Exploded {addr.exploded}", lambda: setClipboardText(str(addr.exploded))),
-                                        Action("last", f"Last {addr.broadcast_address}", lambda: setClipboardText(str(addr.broadcast_address))),
-                                        Action("netmask", f"Netmask {addr.netmask} (= /{addr.prefixlen})", lambda: setClipboardText(str(addr.netmask))),
-                                        Action("wildcard", f"Widlcard {addr.hostmask}", lambda: setClipboardText(str(addr.hostmask))),
-                                        Action("max", f"Max Addr {addr.num_addresses}", lambda: setClipboardText(str(addr.num_addresses))),
-                                        Action("networkhex", f"Network Hex {addr.network_address.packed.hex()}", lambda: setClipboardText(str(addr.network_address.packed.hex()))),
-                                        Action("netmaskhex", f"Mask Hex {addr.netmask.packed.hex()} (= /{addr.prefixlen})", lambda: setClipboardText(str(addr.netmask.packed.hex()))),                                        
-
-                                    ],
-                                )
-                            )
-                ### more advanced with further arguments
-                else:
-                    # bail out the arguments first:
-                    mode = "UNDEF"
-                    level = 0
-
-                    # <trigger> x.x.x.x |next|prev|sub|sup {#}
-                    # Check if NEXT,PREVIOUS SUBneting and SUPerneting with optional desired level
-                    if match := re.match(r"\S+\s+(sub|sup|next|prev)\s*(\d*)", query.string):
-                        mode = match.groups()[0]
-                        # default one level
-                        if match.groups()[1]:
-                            level = int(match.groups()[1])
-                        else:
-                            level = 1
-                    # <trigger> x.x.x.x /YY
-                    # if desired subnet as CIDR is supplied
-                    elif match := re.match(r"\S+\s/(\d+)", query.string):
-                        loookfor = int(match.groups()[0])
-
-                        debug("Looking for: /" + str(loookfor))
-
-                        # find out direction and level by CIDR
-                        # e.g. /24    >     /22 -> sup and 2 levels
-                        if addr.prefixlen > loookfor:
-                            level = addr.prefixlen - loookfor
-                            mode = "sup"
-                        else:
-                            level = loookfor - addr.prefixlen
-                            mode = "sub"
-
-                    debug("Choosed Mode:" + mode + " level:" + str(level))
-
-                    # Ok, lets calculate...
-                    # SUBnet
-                    if mode.startswith("sub"):
-                        if level > (addr.max_prefixlen - addr.prefixlen):
-                            level = addr.max_prefixlen - addr.prefixlen
-                            query.add(StandardItem(iconUrls=icon, id="unknown", text=f"we can't go lower than /{addr.max_prefixlen} - {ordinal(level)} level "))
-
-                        for idx, i in enumerate(addr.subnets(prefixlen_diff=level)):
-                            query.add(
-                                StandardItem(
-                                    id=f"subnet_{i}",
-                                    text=str(i),
-                                    subtext=f"{ordinal(idx + 1)} Subnet",
-                                    iconUrls=icon,
-                                    actions=[Action(f"subnet_{i}_copy", f"Copy network {i}", lambda r=str(i): setClipboardText(r))],
-                                )
-                            )
-                    # next higher "SUPernet"
-                    elif mode.startswith("sup"):
-                        if level > (addr.prefixlen):
-                            level = addr.prefixlen
-                            query.add(StandardItem(iconUrls=icon, text=f"we can't go higher than /0 - {ordinal(level)} level"))
-
-                        for i in range(int(addr.prefixlen) - 8 - level):
-                            query.add(
-                                StandardItem(
-                                    id=f"supernet_{i + level}",
-                                    text=str(addr.supernet(prefixlen_diff=i + level)),
-                                    iconUrls=icon,
-                                    subtext=f"{ordinal(i + level)} level Supernet",
-                                    actions=[
-                                        Action(
-                                            f"supernet_{i + level}_copy",
-                                            f"Copy network {addr.supernet(prefixlen_diff=i + level)}",
-                                            lambda r=str(addr.supernet(prefixlen_diff=i + level)): setClipboardText(r),
-                                        )
-                                    ],
-                                )
-                            )
-                            debug(query.string)
-
-                    # simple "next" aligned subnet with the same mask
-                    elif mode.startswith("next"):
-                        for i in range(1, 10):
-                            if addr.version == 4:
-                                next_range = ipaddress.IPv4Network(str(addr[0] + i * addr.num_addresses) + "/" + str(addr.prefixlen), strict=False)
-                            else:
-                                next_range = ipaddress.IPv6Network(str(addr[0] + i * addr.num_addresses) + "/" + str(addr.prefixlen), strict=False)
-
-                            query.add(
-                                StandardItem(
-                                    text=str(next_range),
-                                    iconUrls=icon,
-                                    subtext=f"next {ordinal(i)} /{addr.prefixlen} subnet",
-                                    actions=[Action(f"next_{i}", f"Copy Network {next_range}", lambda r=str(next_range): setClipboardText(r))],
-                                )
-                            )
-                    # simple "previous" aligned subnets with the same mask
-                    elif mode.startswith("prev"):
-                        for i in range(1, 10):
-                            if addr.version == 4:
-                                prev_range = ipaddress.IPv4Network(str(addr[0] - i * addr.num_addresses) + "/" + str(addr.prefixlen), strict=False)
-                            else:
-                                prev_range = ipaddress.IPv6Network(str(addr[0] - i * addr.num_addresses) + "/" + str(addr.prefixlen), strict=False)
-
-                            query.add(
-                                StandardItem(
-                                    text=str(prev_range),
-                                    iconUrls=icon,
-                                    subtext=f"previous {ordinal(i)} /{addr.prefixlen} subnet",
-                                    actions=[Action(f"prev_{i}", f"Copy network {prev_range}", lambda r=str(prev_range): setClipboardText(r))],
-                                )
-                            )
-                    else:
-                        query.add(StandardItem(text="desired /xx prefix or next|prev|sub|sup", iconUrls=icon, subtext="Query was: %s" % query.string))
+            subtext_parts = [f"IPv{addr.version}"]
+            if is_host:
+                subtext_parts.append("Host")
             else:
-                query.add(StandardItem(text="no valid IPv4/IPv6 address/subnet", iconUrls=icon, subtext="Query was: %s" % query.string))
+                subtext_parts.append("Net")
+
+            if addr.is_loopback: subtext_parts.append("Loopback")
+            if addr.is_global: subtext_parts.append("Global")
+            if addr.is_private: subtext_parts.append("Private")
+            if addr.is_multicast: subtext_parts.append("Multicast")
+            if addr.is_reserved: subtext_parts.append("Reserved")
+            if addr.is_unspecified: subtext_parts.append("Unspecified")
+
+            actions = []
+            if is_host:
+                host_addr = addr.network_address
+                actions.extend([
+                    Action("reverse", f"Reverse Pointer {addr.reverse_pointer}", lambda: setClipboardText(str(addr.reverse_pointer))),
+                    Action("hex", f"Hex {host_addr.packed.hex()}", lambda: setClipboardText(str(host_addr.packed.hex()))),
+                    Action("bin", f"Bin {''.join(f'{byte:08b}' for byte in host_addr.packed)}", lambda: setClipboardText(''.join(f'{byte:08b}' for byte in host_addr.packed)))
+                ])
+                if addr.version == 6:
+                    actions.insert(1, Action("compressed", f"Compressed {addr.compressed}", lambda: setClipboardText(str(addr.compressed))))
+                    actions.insert(2, Action("exploded", f"Exploded {addr.exploded}", lambda: setClipboardText(str(addr.exploded))))
+            else: # is a network
+                if addr.version == 4:
+                    subtext_parts.append(f"hosts {addr.num_addresses}")
+                    actions.extend([
+                        Action("network", f"Network {addr.network_address}", lambda: setClipboardText(str(addr.network_address))),
+                        Action("netmask", f"Netmask {addr.netmask}", lambda: setClipboardText(str(addr.netmask))),
+                        Action("first", f"First {addr.network_address + 1}", lambda: setClipboardText(str(addr.network_address + 1))),
+                        Action("last", f"Last {addr.broadcast_address - 1}", lambda: setClipboardText(str(addr.broadcast_address - 1))),
+                        Action("broadcast", f"Broadcast {addr.broadcast_address}", lambda: setClipboardText(str(addr.broadcast_address))),
+                        Action("wildcard", f"Wildcard {addr.hostmask}", lambda: setClipboardText(str(addr.hostmask))),
+                    ])
+                else: # ipv6 network
+                    subtext_parts.append(f"contains {2 ** (64 - addr.prefixlen)} /64s")
+                    actions.extend([
+                        Action("network", f"Network {addr.network_address}", lambda: setClipboardText(str(addr.network_address))),
+                        Action("compressed", f"Compressed {addr.compressed}", lambda: setClipboardText(str(addr.compressed))),
+                        Action("exploded", f"Exploded {addr.exploded}", lambda: setClipboardText(str(addr.exploded))),
+                        Action("last", f"Last {addr.broadcast_address}", lambda: setClipboardText(str(addr.broadcast_address))),
+                        Action("netmask", f"Netmask {addr.netmask}", lambda: setClipboardText(str(addr.netmask))),
+                    ])
+            
+            query.add(StandardItem(
+                id=md_name,
+                text=str(addr),
+                subtext=", ".join(subtext_parts),
+                icon_factory=lambda p=icon_path: makeImageIcon(str(p)),
+                actions=actions
+            ))
+            return
+
+        # --- Handle advanced queries (sub/sup/next/prev) ---
+        else:
+            mode = "UNDEF"
+            level = 0
+            items = []
+
+            if match := re.match(r"\S+\s+(sub|sup|next|prev)\s*(\d*)", query.string):
+                mode = match.groups()[0]
+                level = int(match.groups()[1]) if match.groups()[1] else 1
+            elif match := re.match(r"\S+\s/(\d+)", query.string):
+                lookup_prefix = int(match.groups()[0])
+                if addr.prefixlen > lookup_prefix:
+                    level = addr.prefixlen - lookup_prefix
+                    mode = "sup"
+                else:
+                    level = lookup_prefix - addr.prefixlen
+                    mode = "sub"
+
+            if mode == "sub":
+                if level > (addr.max_prefixlen - addr.prefixlen):
+                    level = addr.max_prefixlen - addr.prefixlen
+                    items.append(StandardItem(id=md_name, icon_factory=lambda p=icon_path: makeImageIcon(str(p)), text=f"Can't go lower than /{addr.max_prefixlen} - {ordinal(level)} level"))
+                for idx, i in enumerate(addr.subnets(prefixlen_diff=level)):
+                    items.append(StandardItem(
+                        id=f"subnet_{i}", text=str(i), subtext=f"{ordinal(idx + 1)} Subnet",
+                        icon_factory=lambda p=icon_path: makeImageIcon(str(p)),
+                        actions=[Action(f"copy_{i}", f"Copy network {i}", lambda r=str(i): setClipboardText(r))]
+                    ))
+            elif mode == "sup":
+                if level > addr.prefixlen:
+                    level = addr.prefixlen
+                    items.append(StandardItem(id=md_name, icon_factory=lambda p=icon_path: makeImageIcon(str(p)), text=f"Can't go higher than /0 - {ordinal(level)} level"))
+                
+                supernet = addr.supernet(prefixlen_diff=level)
+                items.append(StandardItem(
+                    id=f"supernet_{supernet}", text=str(supernet), icon_factory=lambda p=icon_path: makeImageIcon(str(p)),
+                    subtext=f"{ordinal(level)} level Supernet",
+                    actions=[Action(f"copy_{supernet}", f"Copy network {supernet}", lambda r=str(supernet): setClipboardText(r))]
+                ))
+            elif mode == "next":
+                for i in range(1, self.num_results + 1):
+                    next_range = ipaddress.ip_network(f"{addr[0] + i * addr.num_addresses}/{addr.prefixlen}", strict=False)
+                    items.append(StandardItem(
+                        id=f"next_{i}", text=str(next_range), icon_factory=lambda p=icon_path: makeImageIcon(str(p)),
+                        subtext=f"next {ordinal(i)} /{addr.prefixlen} subnet",
+                        actions=[Action(f"copy_next_{i}", f"Copy Network {next_range}", lambda r=str(next_range): setClipboardText(r))]
+                    ))
+            elif mode == "prev":
+                for i in range(1, self.num_results + 1):
+                    prev_range = ipaddress.ip_network(f"{addr[0] - i * addr.num_addresses}/{addr.prefixlen}", strict=False)
+                    items.append(StandardItem(
+                        id=f"prev_{i}", text=str(prev_range), icon_factory=lambda p=icon_path: makeImageIcon(str(p)),
+                        subtext=f"previous {ordinal(i)} /{addr.prefixlen} subnet",
+                        actions=[Action(f"copy_prev_{i}", f"Copy network {prev_range}", lambda r=str(prev_range): setClipboardText(r))]
+                    ))
+            else:
+                items.append(StandardItem(
+                    id=md_name,
+                    text="Usage: {next|prev|sub|sup|/YY} {level}",
+                    icon_factory=lambda p=icon_path: makeImageIcon(str(p)),
+                    subtext=f"Query was: {query.string}"
+                ))
+            
+            query.add(items)
