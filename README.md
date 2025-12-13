@@ -31,6 +31,11 @@ Synopsis: `sc <trigger> [x.x.x.x|x:x::x]/y {next|prev|sub|sup|/YY} {<level>}`
 
 ![image](https://user-images.githubusercontent.com/13567009/124721189-2bf35880-df09-11eb-9e48-0a996d98ea6b.png)
 
+with option to extract EUI-64 MAC Addresss
+
+<img width="668" height="259" alt="image" src="https://github.com/user-attachments/assets/d8835426-0624-4e13-bcce-8bc8d1b668fe" />
+
+
 
 # Installation
 Simply clone into the Albert plugin directory and activate in Albert Python Modules Settings. Python3 and use the ipaddress.
