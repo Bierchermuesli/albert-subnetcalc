@@ -25,35 +25,26 @@ from pathlib import Path
 import ipaddress
 import re
 
-<<<<<<< HEAD
-md_iid = "4.0"
-=======
 md_iid = "5.0"
->>>>>>> bb88604 (Update to API v5.0)
-md_version = "2.3"
+md_version = "2.4"
 md_name = "SubnetCalc"
 md_description = "Calculate IPv4/IPv6 Subnets"
 md_license = "MIT"
 md_url = "https://github.com/Bierchermuesli/albert-subnetcalc"
-<<<<<<< HEAD
-md_maintainers = "@Bierchermuesli"
-md_authors = "@Bierchermuesli"
-=======
 md_maintainers = ["@Bierchermuesli"]
 md_authors = ["@Bierchermuesli"]
->>>>>>> bb88604 (Update to API v5.0)
 md_lib_dependencies = ["ipaddress"]
 
 
 ordinal = lambda n: "%d%s" % (n, "tsnrhtdd"[(n // 10 % 10 != 1) * (n % 10 < 4) * n % 10 :: 4])
 
 
-class Plugin(PluginInstance, TriggerQueryHandler):
+class Plugin(PluginInstance, GeneratorQueryHandler):
     _num_results = 10
 
     def __init__(self):
         PluginInstance.__init__(self)
-        TriggerQueryHandler.__init__(self)
+        GeneratorQueryHandler.__init__(self)
         self._init_configuration()
 
     @property
@@ -169,27 +160,27 @@ class Plugin(PluginInstance, TriggerQueryHandler):
                 ])
         return actions
 
-    def _handle_simple_query(self, query, addr, icon_path):
+    def _handle_simple_query(self, query_string, addr, icon_path):
         subtext = ", ".join(self._get_simple_subtext_parts(addr))
         actions = self._get_simple_actions(addr)
         
-        query.add(StandardItem(
+        return [StandardItem(
             id=md_name,
             text=str(addr),
             subtext=subtext,
-            icon_factory=lambda p=icon_path: makeImageIcon(str(p)),
+            icon_factory=lambda p=icon_path: Icon.image(p),
             actions=actions
-        ))
+        )]
 
-    def _handle_advanced_query(self, query, addr, icon_path):
+    def _handle_advanced_query(self, query_string, addr, icon_path):
         mode = "UNDEF"
         level = 0
         items = []
 
-        if match := re.match(r"\S+\s+(sub|sup|next|prev)\s*(\d*)", query.string):
+        if match := re.match(r"\S+\s+(sub|sup|next|prev)\s*(\d*)", query_string):
             mode = match.groups()[0]
             level = int(match.groups()[1]) if match.groups()[1] else 1
-        elif match := re.match(r"\S+\s+/(\d+)", query.string):
+        elif match := re.match(r"\S+\s+/(\d+)", query_string):
             lookup_prefix = int(match.groups()[0])
             if addr.prefixlen > lookup_prefix:
                 level = addr.prefixlen - lookup_prefix
@@ -201,21 +192,21 @@ class Plugin(PluginInstance, TriggerQueryHandler):
         if mode == "sub":
             if level > (addr.max_prefixlen - addr.prefixlen):
                 level = addr.max_prefixlen - addr.prefixlen
-                items.append(StandardItem(id=md_name, icon_factory=lambda p=icon_path: makeImageIcon(str(p)), text=f"Can't go lower than /{addr.max_prefixlen} - {ordinal(level)} level"))
+                items.append(StandardItem(id=md_name, icon_factory=lambda p=icon_path: Icon.image(p), text=f"Can't go lower than /{addr.max_prefixlen} - {ordinal(level)} level"))
             for idx, i in enumerate(addr.subnets(prefixlen_diff=level)):
                 items.append(StandardItem(
                     id=f"subnet_{i}", text=str(i), subtext=f"{ordinal(idx + 1)} Subnet",
-                    icon_factory=lambda p=icon_path: makeImageIcon(str(p)),
+                    icon_factory=lambda p=icon_path: Icon.image(p),
                     actions=[Action(f"copy_{i}", f"Copy network {i}", lambda r=str(i): setClipboardText(r))]
                 ))
         elif mode == "sup":
             if level > addr.prefixlen:
                 level = addr.prefixlen
-                items.append(StandardItem(id=md_name, icon_factory=lambda p=icon_path: makeImageIcon(str(p)), text=f"Can't go higher than /0 - {ordinal(level)} level"))
+                items.append(StandardItem(id=md_name, icon_factory=lambda p=icon_path: Icon.image(p), text=f"Can't go higher than /0 - {ordinal(level)} level"))
             
             supernet = addr.supernet(prefixlen_diff=level)
             items.append(StandardItem(
-                id=f"supernet_{supernet}", text=str(supernet), icon_factory=lambda p=icon_path: makeImageIcon(str(p)),
+                id=f"supernet_{supernet}", text=str(supernet), icon_factory=lambda p=icon_path: Icon.image(p),
                 subtext=f"{ordinal(level)} level Supernet",
                 actions=[Action(f"copy_{supernet}", f"Copy network {supernet}", lambda r=str(supernet): setClipboardText(r))]
             ))
@@ -227,7 +218,7 @@ class Plugin(PluginInstance, TriggerQueryHandler):
                 
                 new_net = ipaddress.ip_network(f"{addr[0] + offset}/{addr.prefixlen}", strict=False)
                 items.append(StandardItem(
-                    id=f"{mode}_{i}", text=str(new_net), icon_factory=lambda p=icon_path: makeImageIcon(str(p)),
+                    id=f"{mode}_{i}", text=str(new_net), icon_factory=lambda p=icon_path: Icon.image(p),
                     subtext=f"{mode} {ordinal(i)} /{addr.prefixlen} subnet",
                     actions=[Action(f"copy_{mode}_{i}", f"Copy Network {new_net}", lambda r=str(new_net): setClipboardText(r))]
                 ))
@@ -235,35 +226,36 @@ class Plugin(PluginInstance, TriggerQueryHandler):
             items.append(StandardItem(
                 id=md_name,
                 text="Usage: {next|prev|sub|sup|/YY} {level}",
-                icon_factory=lambda p=icon_path: makeImageIcon(str(p)),
-                subtext=f"Query was: {query.string}"
+                icon_factory=lambda p=icon_path: Icon.image(p),
+                subtext=f"Query was: {query_string}"
             ))
         
-        query.add(items)
+        return items
 
-    def handleTriggerQuery(self, query):
-        if not query.isValid:
+    def items(self, ctx):
+        query_string = ctx.query
+        if not query_string:
             return
 
         addr = None
         icon_path = Path(__file__).parent / "icon.svg"
 
         try:
-            addr = ipaddress.ip_network(query.string.split()[0], strict=False)
+            addr = ipaddress.ip_network(query_string.split()[0], strict=False)
             icon_path = Path(__file__).parent / f"ipv{addr.version}.svg"
         except Exception as e:
-            debug(f"Subnetcal failed to parse: '{query.string}' with error: {e}")
+            debug(f"Subnetcal failed to parse: '{query_string}' with error: {e}")
 
         if not addr:
-            query.add(StandardItem(
+            yield [StandardItem(
                 id=md_name,
                 text="No valid IPv4/IPv6 address/subnet",
-                subtext=f"Query was: {query.string}",
-                icon_factory=lambda p=icon_path: makeImageIcon(str(p))
-            ))
+                subtext=f"Query was: {query_string}",
+                icon_factory=lambda p=icon_path: Icon.image(p)
+            )]
             return
 
-        if len(query.string.split()) == 1:
-            self._handle_simple_query(query, addr, icon_path)
+        if len(query_string.split()) == 1:
+            yield self._handle_simple_query(query_string, addr, icon_path)
         else:
-            self._handle_advanced_query(query, addr, icon_path)
+            yield self._handle_advanced_query(query_string, addr, icon_path)
