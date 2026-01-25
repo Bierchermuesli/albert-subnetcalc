@@ -25,14 +25,23 @@ from pathlib import Path
 import ipaddress
 import re
 
+<<<<<<< HEAD
 md_iid = "4.0"
+=======
+md_iid = "5.0"
+>>>>>>> bb88604 (Update to API v5.0)
 md_version = "2.3"
 md_name = "SubnetCalc"
 md_description = "Calculate IPv4/IPv6 Subnets"
 md_license = "MIT"
 md_url = "https://github.com/Bierchermuesli/albert-subnetcalc"
+<<<<<<< HEAD
 md_maintainers = "@Bierchermuesli"
 md_authors = "@Bierchermuesli"
+=======
+md_maintainers = ["@Bierchermuesli"]
+md_authors = ["@Bierchermuesli"]
+>>>>>>> bb88604 (Update to API v5.0)
 md_lib_dependencies = ["ipaddress"]
 
 
