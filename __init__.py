@@ -3,13 +3,14 @@
 """An advanced IPv4/IPv6 subnet calculator. Returns all relevant Attributes (Broadcast, First/Last, exploded etc...)
 Can also be used for Sub/Supernetting or find previous / next prefixes.
 
-Synopsis: <trigger> [x.x.x.x|x:x::x]/y {next|prev|sub|sup|/YY} {<level>}
+Synopsis: <trigger> [x.x.x.x|x:x::x]/y {next|prev|sub|sup|rand|/YY [rand]} {<level>}
 
 Details Args:
 next - NEXT aligned subnet with the same mask
 prev - PREVious" aligned subnet with the same mask
 sub - returns next lower SUBbnets e.g. x/24 -> y/25, z/25
 sup - find containing higher SUPpernet e.g. x/24s -> x/23
+rand - random subnets within the prefix (default one level lower)
 
 Default one level, can be passed as an additional argument:
 x/24 sub 2 -> y/26, z/26 etc..
@@ -17,13 +18,44 @@ x/24 sub 2 -> y/26, z/26 etc..
 Instead of sub/sup args, the desired /xx subnet argument is also accepted:
 x/24 /29 -> y/29, z/29 etc...
 
+Random samples at a chosen size:
+2001:db8::/64 /80 rand -> 10 random /80s within /64
+192.0.2.0/24 rand      -> 10 random /25s within /24
+
+Use 'sc list' to see well-known reserved prefixes (TEST-NET, RFC 1918, etc.).
+
 """
 
 from albert import *
 
 from pathlib import Path
 import ipaddress
+import random
 import re
+
+
+# (name, prefix, rfc, sample_prefixlen)
+# sample_prefixlen=None means "no useful sub-sample" (e.g. host loopbacks).
+WELL_KNOWN_PREFIXES = [
+    ("TEST-NET-1",       "192.0.2.0/24",      "RFC 5737", 29),
+    ("TEST-NET-2",       "198.51.100.0/24",   "RFC 5737", 29),
+    ("TEST-NET-3",       "203.0.113.0/24",    "RFC 5737", 29),
+    ("Documentation v6", "2001:db8::/32",     "RFC 3849", 64),
+    ("Private 10",       "10.0.0.0/8",        "RFC 1918", 24),
+    ("Private 172.16",   "172.16.0.0/12",     "RFC 1918", 24),
+    ("Private 192.168",  "192.168.0.0/16",    "RFC 1918", 24),
+    ("Unique Local v6",  "fc00::/7",          "RFC 4193", 64),
+    ("CGNAT",            "100.64.0.0/10",     "RFC 6598", 24),
+    ("Link-local v4",    "169.254.0.0/16",    "RFC 3927", 24),
+    ("Link-local v6",    "fe80::/10",         "RFC 4291", 64),
+    ("Loopback v4",      "127.0.0.0/8",       "RFC 6890", 24),
+    ("Loopback v6",      "::1/128",           "RFC 4291", None),
+    ("Benchmarking",     "198.18.0.0/15",     "RFC 2544", 24),
+    ("Multicast v4",     "224.0.0.0/4",       "RFC 5771", None),
+    ("Multicast v6",     "ff00::/8",          "RFC 4291", None),
+    ("NAT64 well-known", "64:ff9b::/96",      "RFC 6052", None),
+    ("Discard v6",       "100::/64",          "RFC 6666", None),
+]
 
 md_iid = "5.0"
 md_version = "2.4"
@@ -91,6 +123,72 @@ class Plugin(PluginInstance, GeneratorQueryHandler):
 
     def defaultTrigger(self):
         return "sc "
+
+    @staticmethod
+    def _random_sample(network, sample_prefixlen):
+        """Pick a random subnet of `sample_prefixlen` size within `network`."""
+        if sample_prefixlen is None or sample_prefixlen <= network.prefixlen:
+            return None
+        diff = sample_prefixlen - network.prefixlen
+        block_size = network.num_addresses >> diff
+        offset = random.getrandbits(diff) * block_size
+        return ipaddress.ip_network(
+            (network.network_address + offset, sample_prefixlen),
+            strict=False,
+        )
+
+    def _handle_empty_query(self):
+        icon = Path(__file__).parent / "icon.svg"
+        hints = [
+            ("list",                   "Browse well-known prefixes (RFC 5737 doc, 1918 private, ULA, …)"),
+            ("192.0.2.0/24",           "Calculate subnet details — network info, host range, reverse pointer"),
+            ("192.0.2.0/24 sub",       "Split into next-lower subnets — add 'sub N' to go N levels deeper"),
+            ("192.0.2.0/24 sup",       "Containing supernet — add 'sup N' to go N levels higher"),
+            ("192.0.2.0/24 next",      "Next aligned same-size subnets"),
+            ("192.0.2.0/24 prev",      "Previous aligned same-size subnets"),
+            ("2001:db8::/32 /48 rand", "Random samples at /N within prefix ('rand' alone uses one level lower)"),
+        ]
+        return [
+            StandardItem(
+                id=f"sc-hint-{example}",
+                text=f"sc {example}",
+                subtext=desc,
+                icon_factory=lambda p=icon: Icon.image(p),
+                input_action_text=f"{example} ",
+            )
+            for example, desc in hints
+        ]
+
+    def _handle_list_query(self):
+        plugin_dir = Path(__file__).parent
+        items = []
+        for name, prefix_str, rfc, sample_prefixlen in WELL_KNOWN_PREFIXES:
+            net = ipaddress.ip_network(prefix_str)
+            sample = self._random_sample(net, sample_prefixlen)
+            icon_path = plugin_dir / f"ipv{net.version}.svg"
+
+            subtext_parts = [rfc, prefix_str]
+            actions = [
+                Action(f"copy-{prefix_str}", f"Copy {prefix_str}",
+                       lambda v=prefix_str: setClipboardText(v)),
+            ]
+            if sample is not None:
+                subtext_parts.append(f"sample {sample}")
+                actions.append(Action(
+                    f"copy-sample-{prefix_str}",
+                    f"Copy sample {sample}",
+                    lambda v=str(sample): setClipboardText(v),
+                ))
+
+            items.append(StandardItem(
+                id=f"sc-list-{prefix_str}",
+                text=f"{name} — {prefix_str}",
+                subtext=", ".join(subtext_parts),
+                icon_factory=lambda p=icon_path: Icon.image(p),
+                input_action_text=f"{prefix_str} ",
+                actions=actions,
+            ))
+        return items
 
     def _get_eui64_mac(self, addr: ipaddress.IPv6Address) -> str | None:
         """Check for EUI-64 identifier and return MAC address if found."""
@@ -185,9 +283,16 @@ class Plugin(PluginInstance, GeneratorQueryHandler):
     def _handle_advanced_query(self, query_string, addr, icon_path):
         mode = "UNDEF"
         level = 0
+        target_prefixlen = None
         items = []
 
-        if match := re.match(r"\S+\s+(sub|sup|next|prev)\s*(\d*)", query_string):
+        if match := re.match(r"\S+\s+/(\d+)\s+rand\s*$", query_string):
+            target_prefixlen = int(match.group(1))
+            mode = "rand"
+        elif match := re.match(r"\S+\s+rand\s*$", query_string):
+            mode = "rand"
+            target_prefixlen = addr.prefixlen + 1
+        elif match := re.match(r"\S+\s+(sub|sup|next|prev)\s*(\d*)", query_string):
             mode = match.groups()[0]
             level = int(match.groups()[1]) if match.groups()[1] else 1
         elif match := re.match(r"\S+\s+/(\d+)", query_string):
@@ -203,7 +308,17 @@ class Plugin(PluginInstance, GeneratorQueryHandler):
             if level > (addr.max_prefixlen - addr.prefixlen):
                 level = addr.max_prefixlen - addr.prefixlen
                 items.append(StandardItem(id="sc-cant-go-lower", icon_factory=lambda p=icon_path: Icon.image(p), text=f"Can't go lower than /{addr.max_prefixlen} - {ordinal(level)} level"))
+            total = 1 << level
+            if total > self.num_results:
+                items.append(StandardItem(
+                    id="sc-sub-truncated",
+                    text=f"{total:,} /{addr.prefixlen + level} subnets — showing first {self.num_results}",
+                    subtext="Increase 'Number of results' in plugin settings, or use 'rand' for random samples",
+                    icon_factory=lambda p=icon_path: Icon.image(p),
+                ))
             for idx, i in enumerate(addr.subnets(prefixlen_diff=level)):
+                if idx >= self.num_results:
+                    break
                 items.append(StandardItem(
                     id=f"sc-subnet-{i}", text=str(i), subtext=f"{ordinal(idx + 1)} Subnet",
                     icon_factory=lambda p=icon_path: Icon.image(p),
@@ -220,6 +335,36 @@ class Plugin(PluginInstance, GeneratorQueryHandler):
                 subtext=f"{ordinal(level)} level Supernet",
                 actions=[Action(f"copy-{supernet}", f"Copy network {supernet}", lambda r=str(supernet): setClipboardText(r))]
             ))
+        elif mode == "rand":
+            if target_prefixlen is None or target_prefixlen <= addr.prefixlen or target_prefixlen > addr.max_prefixlen:
+                items.append(StandardItem(
+                    id="sc-rand-invalid",
+                    text=f"Invalid /{target_prefixlen} for random sample",
+                    subtext=f"Target prefix must be between /{addr.prefixlen + 1} and /{addr.max_prefixlen}",
+                    icon_factory=lambda p=icon_path: Icon.image(p),
+                ))
+            else:
+                diff = target_prefixlen - addr.prefixlen
+                # Cap requested count to the size of the search space when it's small,
+                # so we don't loop forever trying to dedupe.
+                space = 1 << diff if diff < 30 else self.num_results
+                want = min(self.num_results, space)
+                seen = set()
+                attempts = 0
+                while len(seen) < want and attempts < want * 4:
+                    attempts += 1
+                    sample = self._random_sample(addr, target_prefixlen)
+                    key = str(sample)
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    items.append(StandardItem(
+                        id=f"sc-rand-{addr}-{key}",
+                        text=key,
+                        subtext=f"Random /{target_prefixlen} in {addr}",
+                        icon_factory=lambda p=icon_path: Icon.image(p),
+                        actions=[Action(f"copy-{key}", f"Copy {key}", lambda r=key: setClipboardText(r))],
+                    ))
         elif mode in ["next", "prev"]:
             for i in range(1, self.num_results + 1):
                 offset = i * addr.num_addresses
@@ -253,7 +398,12 @@ class Plugin(PluginInstance, GeneratorQueryHandler):
 
     def items(self, ctx):
         query_string = ctx.query
-        if not query_string:
+        if not query_string.strip():
+            yield self._handle_empty_query()
+            return
+
+        if query_string.strip().lower() == "list":
+            yield self._handle_list_query()
             return
 
         addr = None
