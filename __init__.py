@@ -30,8 +30,11 @@ from albert import *
 
 from pathlib import Path
 import ipaddress
+import json
 import random
 import re
+import subprocess
+import time
 
 
 # (name, prefix, rfc, sample_prefixlen)
@@ -83,6 +86,12 @@ class Plugin(PluginInstance, GeneratorQueryHandler):
         GeneratorQueryHandler.__init__(self)
         self._init_configuration()
 
+        self._default_icon_path = str(Path(__file__).parent / "icon.svg")
+
+        # Cached local-interface networks for empty-query hints.
+        self._local_cache = None
+        self._local_cache_ts = 0.0
+
     @property
     def num_results(self):
         return self._num_results
@@ -124,6 +133,73 @@ class Plugin(PluginInstance, GeneratorQueryHandler):
     def defaultTrigger(self):
         return "sc "
 
+    def _icon_factory_for(self, network_or_none):
+        """Returns an icon_factory callable. Albert calls it lazily *per item*,
+        so each call must construct a fresh Icon — Icon objects can't be
+        reused across items.
+        """
+        if network_or_none is None:
+            path = self._default_icon_path
+            return lambda: Icon.image(path)
+        if network_or_none.version == 6:
+            return lambda: Icon.iconified(
+                Icon.grapheme("6", brush=Brush(Color(0, 0, 0))),
+                background_brush=Brush(Color(102, 165, 203)),
+                border_radius=0.25,
+                border_width=0,
+            )
+        return lambda: Icon.iconified(
+            Icon.grapheme("4", brush=Brush(Color(0, 0, 0))),
+            background_brush=Brush(Color(178, 203, 102)),
+            border_radius=0.25,
+            border_width=0,
+        )
+
+    LOCAL_CACHE_SECONDS = 600  # 10 minutes — interfaces don't churn often
+
+    def _get_local_networks(self):
+        """Return [(ifname, network, host)] for non-loopback interfaces.
+
+        Uses `ip -j addr` (Linux). Cached for LOCAL_CACHE_SECONDS. Returns [] on
+        failure (e.g. macOS or `ip` missing) so callers fall back to static
+        examples. Skips host-prefix entries (/32, /128) since they have no
+        useful sub/sup/next/rand operations.
+        """
+        now = time.time()
+        if self._local_cache is not None and now - self._local_cache_ts < self.LOCAL_CACHE_SECONDS:
+            return self._local_cache
+
+        results = []
+        try:
+            output = subprocess.run(
+                ["ip", "-j", "addr"],
+                capture_output=True, text=True, timeout=2,
+            ).stdout
+            for iface in json.loads(output):
+                if iface.get("ifname") == "lo":
+                    continue
+                for addr in iface.get("addr_info", []):
+                    if addr.get("family") not in ("inet", "inet6"):
+                        continue
+                    ip = addr.get("local")
+                    plen = addr.get("prefixlen")
+                    if not ip or plen is None:
+                        continue
+                    try:
+                        host = ipaddress.ip_address(ip)
+                        net = ipaddress.ip_network(f"{ip}/{plen}", strict=False)
+                    except ValueError:
+                        continue
+                    if net.prefixlen >= net.max_prefixlen:
+                        continue
+                    results.append((iface["ifname"], net, host))
+        except (subprocess.SubprocessError, FileNotFoundError, json.JSONDecodeError, OSError):
+            pass
+
+        self._local_cache = results
+        self._local_cache_ts = now
+        return results
+
     @staticmethod
     def _random_sample(network, sample_prefixlen):
         """Pick a random subnet of `sample_prefixlen` size within `network`."""
@@ -138,34 +214,86 @@ class Plugin(PluginInstance, GeneratorQueryHandler):
         )
 
     def _handle_empty_query(self):
-        icon = Path(__file__).parent / "icon.svg"
-        hints = [
-            ("list",                   "Browse well-known prefixes (RFC 5737 doc, 1918 private, ULA, …)"),
-            ("192.0.2.0/24",           "Calculate subnet details — network info, host range, reverse pointer"),
-            ("192.0.2.0/24 sub",       "Split into next-lower subnets — add 'sub N' to go N levels deeper"),
-            ("192.0.2.0/24 sup",       "Containing supernet — add 'sup N' to go N levels higher"),
-            ("192.0.2.0/24 next",      "Next aligned same-size subnets"),
-            ("192.0.2.0/24 prev",      "Previous aligned same-size subnets"),
-            ("2001:db8::/32 /48 rand", "Random samples at /N within prefix ('rand' alone uses one level lower)"),
+        local = self._get_local_networks()
+
+        # Dedupe by network string (collapse multiple host addrs in the same net),
+        # remember which interfaces a given network appears on for the subtext.
+        seen = {}
+        order = []
+        for ifname, net, host in local:
+            key = str(net)
+            if key in seen:
+                if ifname not in seen[key]["ifaces"]:
+                    seen[key]["ifaces"].append(ifname)
+            else:
+                seen[key] = {"net": net, "host": host, "ifaces": [ifname]}
+                order.append(key)
+
+        items = []
+
+        # 'list' shortcut — always present, no IP context.
+        items.append(StandardItem(
+            id="sc-hint-list",
+            text="sc list",
+            subtext="Browse well-known prefixes (RFC 5737 doc, 1918 private, ULA, …)",
+            icon_factory=self._icon_factory_for(None),
+            input_action_text="list ",
+        ))
+
+        # One "calculate details" hint per detected local network.
+        for key in order:
+            entry = seen[key]
+            net = entry["net"]
+            ifaces = ", ".join(entry["ifaces"])
+            if net.is_link_local:
+                kind = "link-local"
+            elif net.is_private:
+                kind = "private"
+            elif net.is_loopback:
+                kind = "loopback"
+            else:
+                kind = "global"
+            items.append(StandardItem(
+                id=f"sc-hint-local-{key}",
+                text=f"sc {key}",
+                subtext=f"{ifaces} — your /{net.prefixlen} ({kind}, host: {entry['host']})",
+                icon_factory=self._icon_factory_for(net),
+                input_action_text=f"{key} ",
+            ))
+
+        # Pick a representative v4/v6 for the command-example rows. Prefer
+        # non-link-local; fall back to documentation prefixes if absent.
+        local_v4 = next((seen[k]["net"] for k in order if seen[k]["net"].version == 4 and not seen[k]["net"].is_link_local), None)
+        local_v6 = next((seen[k]["net"] for k in order if seen[k]["net"].version == 6 and not seen[k]["net"].is_link_local), None)
+        if local_v6 is None:
+            local_v6 = next((seen[k]["net"] for k in order if seen[k]["net"].version == 6), None)
+
+        v4 = str(local_v4) if local_v4 else "192.0.2.0/24"
+        v6 = str(local_v6) if local_v6 else "2001:db8::/32"
+
+        examples = [
+            (f"{v4} sub",      local_v4, f"Split {v4} into next-lower subnets — add 'sub N' for deeper levels"),
+            (f"{v4} sup",      local_v4, f"Containing supernet of {v4} — add 'sup N' for higher levels"),
+            (f"{v4} next",     local_v4, f"Next aligned same-size subnets after {v4}"),
+            (f"{v4} prev",     local_v4, f"Previous aligned same-size subnets before {v4}"),
+            (f"{v6} /80 rand", local_v6, f"Random /80 samples within {v6} (drop '/80' for one level lower)"),
         ]
-        return [
-            StandardItem(
+        for example, net_for_icon, desc in examples:
+            items.append(StandardItem(
                 id=f"sc-hint-{example}",
                 text=f"sc {example}",
                 subtext=desc,
-                icon_factory=lambda p=icon: Icon.image(p),
+                icon_factory=self._icon_factory_for(net_for_icon),
                 input_action_text=f"{example} ",
-            )
-            for example, desc in hints
-        ]
+            ))
+
+        return items
 
     def _handle_list_query(self):
-        plugin_dir = Path(__file__).parent
         items = []
         for name, prefix_str, rfc, sample_prefixlen in WELL_KNOWN_PREFIXES:
             net = ipaddress.ip_network(prefix_str)
             sample = self._random_sample(net, sample_prefixlen)
-            icon_path = plugin_dir / f"ipv{net.version}.svg"
 
             subtext_parts = [rfc, prefix_str]
             actions = [
@@ -184,7 +312,7 @@ class Plugin(PluginInstance, GeneratorQueryHandler):
                 id=f"sc-list-{prefix_str}",
                 text=f"{name} — {prefix_str}",
                 subtext=", ".join(subtext_parts),
-                icon_factory=lambda p=icon_path: Icon.image(p),
+                icon_factory=self._icon_factory_for(net),
                 input_action_text=f"{prefix_str} ",
                 actions=actions,
             ))
@@ -266,7 +394,7 @@ class Plugin(PluginInstance, GeneratorQueryHandler):
                 ])
         return actions
 
-    def _handle_simple_query(self, query_string, addr, icon_path):
+    def _handle_simple_query(self, query_string, addr):
         subtext = ", ".join(self._get_simple_subtext_parts(addr))
         actions = self._get_simple_actions(addr)
         is_host = (addr.version == 4 and addr.prefixlen == 32) or \
@@ -276,15 +404,16 @@ class Plugin(PluginInstance, GeneratorQueryHandler):
             id=f"sc-{'host' if is_host else 'net'}-{addr}",
             text=str(addr),
             subtext=subtext,
-            icon_factory=lambda p=icon_path: Icon.image(p),
+            icon_factory=self._icon_factory_for(addr),
             actions=actions
         )]
 
-    def _handle_advanced_query(self, query_string, addr, icon_path):
+    def _handle_advanced_query(self, query_string, addr):
         mode = "UNDEF"
         level = 0
         target_prefixlen = None
         items = []
+        icon_factory = self._icon_factory_for(addr)
 
         if match := re.match(r"\S+\s+/(\d+)\s+rand\s*$", query_string):
             target_prefixlen = int(match.group(1))
@@ -307,31 +436,31 @@ class Plugin(PluginInstance, GeneratorQueryHandler):
         if mode == "sub":
             if level > (addr.max_prefixlen - addr.prefixlen):
                 level = addr.max_prefixlen - addr.prefixlen
-                items.append(StandardItem(id="sc-cant-go-lower", icon_factory=lambda p=icon_path: Icon.image(p), text=f"Can't go lower than /{addr.max_prefixlen} - {ordinal(level)} level"))
+                items.append(StandardItem(id="sc-cant-go-lower", icon_factory=icon_factory, text=f"Can't go lower than /{addr.max_prefixlen} - {ordinal(level)} level"))
             total = 1 << level
             if total > self.num_results:
                 items.append(StandardItem(
                     id="sc-sub-truncated",
                     text=f"{total:,} /{addr.prefixlen + level} subnets — showing first {self.num_results}",
                     subtext="Increase 'Number of results' in plugin settings, or use 'rand' for random samples",
-                    icon_factory=lambda p=icon_path: Icon.image(p),
+                    icon_factory=icon_factory,
                 ))
             for idx, i in enumerate(addr.subnets(prefixlen_diff=level)):
                 if idx >= self.num_results:
                     break
                 items.append(StandardItem(
                     id=f"sc-subnet-{i}", text=str(i), subtext=f"{ordinal(idx + 1)} Subnet",
-                    icon_factory=lambda p=icon_path: Icon.image(p),
+                    icon_factory=icon_factory,
                     actions=[Action(f"copy-{i}", f"Copy network {i}", lambda r=str(i): setClipboardText(r))]
                 ))
         elif mode == "sup":
             if level > addr.prefixlen:
                 level = addr.prefixlen
-                items.append(StandardItem(id="sc-cant-go-higher", icon_factory=lambda p=icon_path: Icon.image(p), text=f"Can't go higher than /0 - {ordinal(level)} level"))
+                items.append(StandardItem(id="sc-cant-go-higher", icon_factory=icon_factory, text=f"Can't go higher than /0 - {ordinal(level)} level"))
 
             supernet = addr.supernet(prefixlen_diff=level)
             items.append(StandardItem(
-                id=f"sc-supernet-{supernet}", text=str(supernet), icon_factory=lambda p=icon_path: Icon.image(p),
+                id=f"sc-supernet-{supernet}", text=str(supernet), icon_factory=icon_factory,
                 subtext=f"{ordinal(level)} level Supernet",
                 actions=[Action(f"copy-{supernet}", f"Copy network {supernet}", lambda r=str(supernet): setClipboardText(r))]
             ))
@@ -341,7 +470,7 @@ class Plugin(PluginInstance, GeneratorQueryHandler):
                     id="sc-rand-invalid",
                     text=f"Invalid /{target_prefixlen} for random sample",
                     subtext=f"Target prefix must be between /{addr.prefixlen + 1} and /{addr.max_prefixlen}",
-                    icon_factory=lambda p=icon_path: Icon.image(p),
+                    icon_factory=icon_factory,
                 ))
             else:
                 diff = target_prefixlen - addr.prefixlen
@@ -362,7 +491,7 @@ class Plugin(PluginInstance, GeneratorQueryHandler):
                         id=f"sc-rand-{addr}-{key}",
                         text=key,
                         subtext=f"Random /{target_prefixlen} in {addr}",
-                        icon_factory=lambda p=icon_path: Icon.image(p),
+                        icon_factory=icon_factory,
                         actions=[Action(f"copy-{key}", f"Copy {key}", lambda r=key: setClipboardText(r))],
                     ))
         elif mode in ["next", "prev"]:
@@ -377,21 +506,21 @@ class Plugin(PluginInstance, GeneratorQueryHandler):
                     items.append(StandardItem(
                         id=f"sc-{mode}-edge",
                         text=f"No more {mode} subnets — address space edge reached",
-                        icon_factory=lambda p=icon_path: Icon.image(p),
+                        icon_factory=icon_factory,
                         subtext=f"Stopped after {ordinal(i - 1)} /{addr.prefixlen} subnet" if i > 1 else f"{addr} is at the edge"
                     ))
                     break
                 items.append(StandardItem(
-                    id=f"sc-{mode}-{addr}-{i}", text=str(new_net), icon_factory=lambda p=icon_path: Icon.image(p),
+                    id=f"sc-{mode}-{addr}-{i}", text=str(new_net), icon_factory=icon_factory,
                     subtext=f"{mode} {ordinal(i)} /{addr.prefixlen} subnet",
                     actions=[Action(f"copy-{mode}-{i}", f"Copy Network {new_net}", lambda r=str(new_net): setClipboardText(r))]
                 ))
         else:
             items.append(StandardItem(
                 id="sc-usage",
-                text="Usage: {next|prev|sub|sup|/YY} {level}",
-                icon_factory=lambda p=icon_path: Icon.image(p),
-                subtext=f"Query was: {query_string}"
+                text="Usage: <prefix> {sub|sup|next|prev|rand|/YY [rand]} [N]",
+                icon_factory=icon_factory,
+                subtext=f"Query was: {query_string}  —  type 'sc list' for well-known prefixes"
             ))
         
         return items
@@ -407,11 +536,8 @@ class Plugin(PluginInstance, GeneratorQueryHandler):
             return
 
         addr = None
-        icon_path = Path(__file__).parent / "icon.svg"
-
         try:
             addr = ipaddress.ip_network(query_string.split()[0], strict=False)
-            icon_path = Path(__file__).parent / f"ipv{addr.version}.svg"
         except Exception as e:
             debug(f"Subnetcal failed to parse: '{query_string}' with error: {e}")
 
@@ -420,11 +546,11 @@ class Plugin(PluginInstance, GeneratorQueryHandler):
                 id="sc-invalid",
                 text="No valid IPv4/IPv6 address/subnet",
                 subtext=f"Query was: {query_string}",
-                icon_factory=lambda p=icon_path: Icon.image(p)
+                icon_factory=self._icon_factory_for(None)
             )]
             return
 
         if len(query_string.split()) == 1:
-            yield self._handle_simple_query(query_string, addr, icon_path)
+            yield self._handle_simple_query(query_string, addr)
         else:
-            yield self._handle_advanced_query(query_string, addr, icon_path)
+            yield self._handle_advanced_query(query_string, addr)

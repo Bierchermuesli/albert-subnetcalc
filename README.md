@@ -1,46 +1,53 @@
-# Albert IPv4/IPv6 Subnet Calculator 
-This is an advanced subnet calculator for awsome. [Albert Launcher](https://albertlauncher.github.io/). 
+# Albert IPv4/IPv6 Subnet Calculator
+An advanced subnet calculator for the [Albert Launcher](https://albertlauncher.github.io/). Calculates everything from an IP/prefix: subnet details, sub/supernets, neighbours, random samples, and a quick reference for well-known reserved prefixes.
 
-This module calculates everything from an IP/Prefix: IP/subnet details, subnet/supernet, subnet neighbours etc.
+## Synopsis
+```
+sc                                       — quick hints using your local interfaces + 'list' shortcut
+sc list                                  — browse well-known reserved prefixes
+sc <prefix>                              — subnet details (network, hosts, broadcast, exploded, EUI-64, …)
+sc <prefix> sub [N]                      — split into next-lower subnets (default N=1)
+sc <prefix> sup [N]                      — find containing supernet
+sc <prefix> next | prev                  — adjacent same-size subnets
+sc <prefix> /YY                          — equivalent to sub/sup to /YY
+sc <prefix> rand                         — random subnets one level below
+sc <prefix> /YY rand                     — random samples at /YY within prefix
+```
 
-Synopsis: `sc <trigger> [x.x.x.x|x:x::x]/y {next|prev|sub|sup|/YY} {<level>}`
+## Features
 
+##### Smart empty query
+Type `sc ` and the launcher fills with hints driven by your **actual interfaces** (`ip -j addr`), so the examples are immediately useful — Tab on a row pulls the prefix into the calculator. Falls back to RFC 5737 / 3849 documentation prefixes when no local addresses are found (e.g. macOS or no `ip` binary).
 
-##### Simple Subnet output
-![image](https://user-images.githubusercontent.com/13567009/124381622-a9c62280-dcc3-11eb-8ab4-cab3da8ad468.png)
+##### Well-known prefixes — `sc list`
+A curated reference: RFC 5737 TEST-NETs, RFC 3849 v6 docs, RFC 1918, RFC 6598 CGNAT, ULA, link-local, loopback, benchmarking (RFC 2544), multicast, NAT64, RFC 6666 discard. Each row shows the canonical prefix and a freshly-randomized sample at a useful size (`/29` for v4, `/64` for v6) — handy for grabbing a unique example for documentation.
 
-##### Calculate smaller subnets - this is equivalent to `sc 203.0.113.0/24 sub 5` (/29 is the 5h level)
+Tab on any row rewrites the input to that prefix so you can keep working.
 
-![image](https://user-images.githubusercontent.com/13567009/124381638-bea2b600-dcc3-11eb-9e12-332a6a3802ab.png)
+##### Random subnets — `rand`
+`sc 2001:db8::/32 /48 rand` returns N (configurable) random `/48`s within `/32`. Uses `random.getrandbits` so samples are spread across the entire space. Bare `<prefix> rand` defaults to one level lower.
 
-##### find the more specific *SUP*pernet (you can also type e.g.`sc 203.0.113.0/24 /22`)
+##### Subnetting
+- `sc 203.0.113.0/24 sub 5` — split into `/29`s (5 levels lower). Capped at `num_results`; a banner row tells you how many subnets exist in total and suggests `rand` for sampling huge spaces.
+- `sc 203.0.113.0/24 /22` — auto-detects whether to sub or sup based on prefix lengths.
 
-![image](https://user-images.githubusercontent.com/13567009/124720996-01a19b00-df09-11eb-838e-25d53edb42a9.png)
+##### Supernet
+`sc 203.0.113.0/24 sup` — `/23`. `sup 8` — `/16`.
 
+##### Same-size neighbours
+`sc 203.0.113.0/24 next|prev` — N adjacent subnets, with safe stop at the address-space edge (no crash on `0.0.0.0/24 prev`).
 
-##### find next subnet of same size:
+##### IPv6 details
+Network/compressed/exploded/last/netmask. Hosts get reverse pointer, hex, binary. **EUI-64 MAC extraction** when the interface ID has the `ff:fe` marker.
 
-![image](https://user-images.githubusercontent.com/13567009/124381719-4f799180-dcc4-11eb-84b3-62d32f63a7f6.png)
-
-##### find previous subnet of same size 
-
-![image](https://user-images.githubusercontent.com/13567009/124381725-53a5af00-dcc4-11eb-831c-4d77bbc3295b.png)
-
-##### IPv6 Works too:
-![image](https://user-images.githubusercontent.com/13567009/124381755-7df76c80-dcc4-11eb-883f-fad922c86c38.png)
-
-![image](https://user-images.githubusercontent.com/13567009/124721189-2bf35880-df09-11eb-9e48-0a996d98ea6b.png)
-
-with option to extract EUI-64 MAC Addresss
-
-<img width="668" height="259" alt="image" src="https://github.com/user-attachments/assets/d8835426-0624-4e13-bcce-8bc8d1b668fe" />
-
-
-
-# Installation
-Simply clone into the Albert plugin directory and activate in Albert Python Modules Settings. No extra Python packages required — uses the stdlib `ipaddress` module.
+## Installation
+Clone into the Albert plugin directory and activate in Albert Python Modules Settings. No external Python packages — uses stdlib `ipaddress`. Local-interface hints rely on `ip` (iproute2, standard on Linux).
 ```
 git clone git@github.com:Bierchermuesli/albert-subnetcalc.git ~/.local/share/albert/python/plugins/subnetcalc
 ```
-# Bugs / Feedback
-always welcome
+
+## Settings
+- **Number of results** — applies to `next`, `prev`, capped result count for `sub`, and the size of `rand` batches.
+
+## Bugs / Feedback
+Always welcome.
