@@ -38,10 +38,9 @@ with option to extract EUI-64 MAC Addresss
 
 
 # Installation
-Simply clone into the Albert plugin directory and activate in Albert Python Modules Settings. Python3 and use the ipaddress.
+Simply clone into the Albert plugin directory and activate in Albert Python Modules Settings. No extra Python packages required — uses the stdlib `ipaddress` module.
 ```
-pip3 install ipaddress
-git clone  git@github.com:Bierchermuesli/albert-subnetcalc.git  ~/.local/share/albert/python/plugins/subnetcalc
+git clone git@github.com:Bierchermuesli/albert-subnetcalc.git ~/.local/share/albert/python/plugins/subnetcalc
 ```
 # Bugs / Feedback
 always welcome

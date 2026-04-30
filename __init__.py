@@ -33,10 +33,14 @@ md_license = "MIT"
 md_url = "https://github.com/Bierchermuesli/albert-subnetcalc"
 md_maintainers = ["@Bierchermuesli"]
 md_authors = ["@Bierchermuesli"]
-md_lib_dependencies = ["ipaddress"]
 
 
-ordinal = lambda n: "%d%s" % (n, "tsnrhtdd"[(n // 10 % 10 != 1) * (n % 10 < 4) * n % 10 :: 4])
+def ordinal(n: int) -> str:
+    if 10 <= n % 100 <= 20:
+        suffix = "th"
+    else:
+        suffix = {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th")
+    return f"{n}{suffix}"
 
 
 class Plugin(PluginInstance, GeneratorQueryHandler):
@@ -57,11 +61,15 @@ class Plugin(PluginInstance, GeneratorQueryHandler):
         self.writeConfig("num_results", value)
 
     def _init_configuration(self):
-        conf = self.readConfig("num_results", int)
-        if conf is None:
-            self.writeConfig("num_results", self._num_results)
-        else:
-            self._num_results = conf
+        for key, type_, default in [
+            ("num_results", int, self._num_results),
+        ]:
+            conf = self.readConfig(key, type_)
+            if conf is None:
+                self.writeConfig(key, default)
+                setattr(self, f"_{key}", default)
+            else:
+                setattr(self, f"_{key}", conf)
 
     def configWidget(self):
         return [
@@ -163,9 +171,11 @@ class Plugin(PluginInstance, GeneratorQueryHandler):
     def _handle_simple_query(self, query_string, addr, icon_path):
         subtext = ", ".join(self._get_simple_subtext_parts(addr))
         actions = self._get_simple_actions(addr)
-        
+        is_host = (addr.version == 4 and addr.prefixlen == 32) or \
+                  (addr.version == 6 and addr.prefixlen == 128)
+
         return [StandardItem(
-            id=md_name,
+            id=f"sc-{'host' if is_host else 'net'}-{addr}",
             text=str(addr),
             subtext=subtext,
             icon_factory=lambda p=icon_path: Icon.image(p),
@@ -192,39 +202,48 @@ class Plugin(PluginInstance, GeneratorQueryHandler):
         if mode == "sub":
             if level > (addr.max_prefixlen - addr.prefixlen):
                 level = addr.max_prefixlen - addr.prefixlen
-                items.append(StandardItem(id=md_name, icon_factory=lambda p=icon_path: Icon.image(p), text=f"Can't go lower than /{addr.max_prefixlen} - {ordinal(level)} level"))
+                items.append(StandardItem(id="sc-cant-go-lower", icon_factory=lambda p=icon_path: Icon.image(p), text=f"Can't go lower than /{addr.max_prefixlen} - {ordinal(level)} level"))
             for idx, i in enumerate(addr.subnets(prefixlen_diff=level)):
                 items.append(StandardItem(
-                    id=f"subnet_{i}", text=str(i), subtext=f"{ordinal(idx + 1)} Subnet",
+                    id=f"sc-subnet-{i}", text=str(i), subtext=f"{ordinal(idx + 1)} Subnet",
                     icon_factory=lambda p=icon_path: Icon.image(p),
-                    actions=[Action(f"copy_{i}", f"Copy network {i}", lambda r=str(i): setClipboardText(r))]
+                    actions=[Action(f"copy-{i}", f"Copy network {i}", lambda r=str(i): setClipboardText(r))]
                 ))
         elif mode == "sup":
             if level > addr.prefixlen:
                 level = addr.prefixlen
-                items.append(StandardItem(id=md_name, icon_factory=lambda p=icon_path: Icon.image(p), text=f"Can't go higher than /0 - {ordinal(level)} level"))
-            
+                items.append(StandardItem(id="sc-cant-go-higher", icon_factory=lambda p=icon_path: Icon.image(p), text=f"Can't go higher than /0 - {ordinal(level)} level"))
+
             supernet = addr.supernet(prefixlen_diff=level)
             items.append(StandardItem(
-                id=f"supernet_{supernet}", text=str(supernet), icon_factory=lambda p=icon_path: Icon.image(p),
+                id=f"sc-supernet-{supernet}", text=str(supernet), icon_factory=lambda p=icon_path: Icon.image(p),
                 subtext=f"{ordinal(level)} level Supernet",
-                actions=[Action(f"copy_{supernet}", f"Copy network {supernet}", lambda r=str(supernet): setClipboardText(r))]
+                actions=[Action(f"copy-{supernet}", f"Copy network {supernet}", lambda r=str(supernet): setClipboardText(r))]
             ))
         elif mode in ["next", "prev"]:
             for i in range(1, self.num_results + 1):
                 offset = i * addr.num_addresses
                 if mode == "prev":
                     offset = -offset
-                
-                new_net = ipaddress.ip_network(f"{addr[0] + offset}/{addr.prefixlen}", strict=False)
+
+                try:
+                    new_net = ipaddress.ip_network(f"{addr[0] + offset}/{addr.prefixlen}", strict=False)
+                except (ValueError, ipaddress.AddressValueError):
+                    items.append(StandardItem(
+                        id=f"sc-{mode}-edge",
+                        text=f"No more {mode} subnets — address space edge reached",
+                        icon_factory=lambda p=icon_path: Icon.image(p),
+                        subtext=f"Stopped after {ordinal(i - 1)} /{addr.prefixlen} subnet" if i > 1 else f"{addr} is at the edge"
+                    ))
+                    break
                 items.append(StandardItem(
-                    id=f"{mode}_{i}", text=str(new_net), icon_factory=lambda p=icon_path: Icon.image(p),
+                    id=f"sc-{mode}-{addr}-{i}", text=str(new_net), icon_factory=lambda p=icon_path: Icon.image(p),
                     subtext=f"{mode} {ordinal(i)} /{addr.prefixlen} subnet",
-                    actions=[Action(f"copy_{mode}_{i}", f"Copy Network {new_net}", lambda r=str(new_net): setClipboardText(r))]
+                    actions=[Action(f"copy-{mode}-{i}", f"Copy Network {new_net}", lambda r=str(new_net): setClipboardText(r))]
                 ))
         else:
             items.append(StandardItem(
-                id=md_name,
+                id="sc-usage",
                 text="Usage: {next|prev|sub|sup|/YY} {level}",
                 icon_factory=lambda p=icon_path: Icon.image(p),
                 subtext=f"Query was: {query_string}"
@@ -248,7 +267,7 @@ class Plugin(PluginInstance, GeneratorQueryHandler):
 
         if not addr:
             yield [StandardItem(
-                id=md_name,
+                id="sc-invalid",
                 text="No valid IPv4/IPv6 address/subnet",
                 subtext=f"Query was: {query_string}",
                 icon_factory=lambda p=icon_path: Icon.image(p)
