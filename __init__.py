@@ -34,6 +34,7 @@ import json
 import random
 import re
 import subprocess
+import threading
 import time
 
 
@@ -88,9 +89,12 @@ class Plugin(PluginInstance, GeneratorQueryHandler):
 
         self._default_icon_path = str(Path(__file__).parent / "icon.svg")
 
-        # Cached local-interface networks for empty-query hints.
-        self._local_cache = None
+        # Cached local-interface networks for empty-query hints. Refreshed in a
+        # background thread (see _get_local_networks) so `ip -j addr` never
+        # blocks the query pipeline.
+        self._local_cache = []
         self._local_cache_ts = 0.0
+        self._local_refresh_lock = threading.Lock()
 
     @property
     def num_results(self):
@@ -157,18 +161,14 @@ class Plugin(PluginInstance, GeneratorQueryHandler):
 
     LOCAL_CACHE_SECONDS = 600  # 10 minutes — interfaces don't churn often
 
-    def _get_local_networks(self):
-        """Return [(ifname, network, host)] for non-loopback interfaces.
-
-        Uses `ip -j addr` (Linux). Cached for LOCAL_CACHE_SECONDS. Returns [] on
-        failure (e.g. macOS or `ip` missing) so callers fall back to static
-        examples. Skips host-prefix entries (/32, /128) since they have no
-        useful sub/sup/next/rand operations.
+    def _refresh_local_networks(self):
+        """Blocking `ip -j addr` call (Linux). Runs on the calling thread — callers
+        decide whether that's the query thread (first run only) or a background
+        thread (subsequent refreshes). Leaves the cache untouched on failure
+        (e.g. macOS or `ip` missing) so callers fall back to static examples.
+        Skips host-prefix entries (/32, /128) since they have no useful
+        sub/sup/next/rand operations.
         """
-        now = time.time()
-        if self._local_cache is not None and now - self._local_cache_ts < self.LOCAL_CACHE_SECONDS:
-            return self._local_cache
-
         results = []
         try:
             output = subprocess.run(
@@ -197,8 +197,30 @@ class Plugin(PluginInstance, GeneratorQueryHandler):
             pass
 
         self._local_cache = results
-        self._local_cache_ts = now
-        return results
+        self._local_cache_ts = time.time()
+
+    def _refresh_local_networks_and_release(self):
+        try:
+            self._refresh_local_networks()
+        finally:
+            self._local_refresh_lock.release()
+
+    def _get_local_networks(self):
+        """Return [(ifname, network, host)] for non-loopback interfaces, cached
+        for LOCAL_CACHE_SECONDS. Only the very first call blocks on `ip -j addr`;
+        subsequent refreshes happen in a background thread so `items()` always
+        returns immediately, serving the previous cache while it refreshes.
+        """
+        now = time.time()
+        if now - self._local_cache_ts < self.LOCAL_CACHE_SECONDS:
+            return self._local_cache
+
+        if self._local_cache_ts == 0.0:
+            self._refresh_local_networks()
+        elif self._local_refresh_lock.acquire(blocking=False):
+            threading.Thread(target=self._refresh_local_networks_and_release, daemon=True).start()
+
+        return self._local_cache
 
     @staticmethod
     def _random_sample(network, sample_prefixlen):
@@ -329,10 +351,14 @@ class Plugin(PluginInstance, GeneratorQueryHandler):
         mac_bytes = eui64_bytes[0:3] + eui64_bytes[3+2:]
         return ':'.join(f'{b:02x}' for b in mac_bytes)
 
+    @staticmethod
+    def _is_host(addr):
+        return (addr.version == 4 and addr.prefixlen == 32) or \
+               (addr.version == 6 and addr.prefixlen == 128)
+
     def _get_simple_subtext_parts(self, addr):
-        is_host = (addr.version == 4 and addr.prefixlen == 32) or \
-                  (addr.version == 6 and addr.prefixlen == 128)
-        
+        is_host = self._is_host(addr)
+
         parts = [f"IPv{addr.version}"]
         parts.append("Host" if is_host else "Net")
 
@@ -356,8 +382,7 @@ class Plugin(PluginInstance, GeneratorQueryHandler):
         return parts
 
     def _get_simple_actions(self, addr):
-        is_host = (addr.version == 4 and addr.prefixlen == 32) or \
-                  (addr.version == 6 and addr.prefixlen == 128)
+        is_host = self._is_host(addr)
         actions = []
         
         if is_host:
@@ -397,8 +422,7 @@ class Plugin(PluginInstance, GeneratorQueryHandler):
     def _handle_simple_query(self, query_string, addr):
         subtext = ", ".join(self._get_simple_subtext_parts(addr))
         actions = self._get_simple_actions(addr)
-        is_host = (addr.version == 4 and addr.prefixlen == 32) or \
-                  (addr.version == 6 and addr.prefixlen == 128)
+        is_host = self._is_host(addr)
 
         return [StandardItem(
             id=f"sc-{'host' if is_host else 'net'}-{addr}",
@@ -408,122 +432,143 @@ class Plugin(PluginInstance, GeneratorQueryHandler):
             actions=actions
         )]
 
-    def _handle_advanced_query(self, query_string, addr):
-        mode = "UNDEF"
-        level = 0
-        target_prefixlen = None
-        items = []
-        icon_factory = self._icon_factory_for(addr)
-
+    @staticmethod
+    def _parse_advanced_query(query_string, addr):
+        """Returns (mode, level, target_prefixlen) parsed from the query string."""
         if match := re.match(r"\S+\s+/(\d+)\s+rand\s*$", query_string):
-            target_prefixlen = int(match.group(1))
-            mode = "rand"
-        elif match := re.match(r"\S+\s+rand\s*$", query_string):
-            mode = "rand"
-            target_prefixlen = addr.prefixlen + 1
-        elif match := re.match(r"\S+\s+(sub|sup|next|prev)\s*(\d*)", query_string):
+            return "rand", 0, int(match.group(1))
+        if match := re.match(r"\S+\s+rand\s*$", query_string):
+            return "rand", 0, addr.prefixlen + 1
+        if match := re.match(r"\S+\s+(sub|sup|next|prev)\s*(\d*)", query_string):
             mode = match.groups()[0]
             level = int(match.groups()[1]) if match.groups()[1] else 1
-        elif match := re.match(r"\S+\s+/(\d+)", query_string):
+            return mode, level, None
+        if match := re.match(r"\S+\s+/(\d+)", query_string):
             lookup_prefix = int(match.groups()[0])
             if addr.prefixlen > lookup_prefix:
-                level = addr.prefixlen - lookup_prefix
-                mode = "sup"
+                return "sup", addr.prefixlen - lookup_prefix, None
             else:
-                level = lookup_prefix - addr.prefixlen
-                mode = "sub"
+                return "sub", lookup_prefix - addr.prefixlen, None
+        return "UNDEF", 0, None
+
+    def _mode_sub(self, addr, level, icon_factory):
+        items = []
+        if level > (addr.max_prefixlen - addr.prefixlen):
+            level = addr.max_prefixlen - addr.prefixlen
+            items.append(StandardItem(id="sc-cant-go-lower", icon_factory=icon_factory, text=f"Can't go lower than /{addr.max_prefixlen} - {ordinal(level)} level"))
+        total = 1 << level
+        if total > self.num_results:
+            items.append(StandardItem(
+                id="sc-sub-truncated",
+                text=f"{total:,} /{addr.prefixlen + level} subnets — showing first {self.num_results}",
+                subtext="Increase 'Number of results' in plugin settings, or use 'rand' for random samples",
+                icon_factory=icon_factory,
+            ))
+        for idx, i in enumerate(addr.subnets(prefixlen_diff=level)):
+            if idx >= self.num_results:
+                break
+            items.append(StandardItem(
+                id=f"sc-subnet-{i}", text=str(i), subtext=f"{ordinal(idx + 1)} Subnet",
+                icon_factory=icon_factory,
+                actions=[Action(f"copy-{i}", f"Copy network {i}", lambda r=str(i): setClipboardText(r))]
+            ))
+        return items
+
+    def _mode_sup(self, addr, level, icon_factory):
+        items = []
+        if level > addr.prefixlen:
+            level = addr.prefixlen
+            items.append(StandardItem(id="sc-cant-go-higher", icon_factory=icon_factory, text=f"Can't go higher than /0 - {ordinal(level)} level"))
+
+        supernet = addr.supernet(prefixlen_diff=level)
+        items.append(StandardItem(
+            id=f"sc-supernet-{supernet}", text=str(supernet), icon_factory=icon_factory,
+            subtext=f"{ordinal(level)} level Supernet",
+            actions=[Action(f"copy-{supernet}", f"Copy network {supernet}", lambda r=str(supernet): setClipboardText(r))]
+        ))
+        return items
+
+    def _mode_rand(self, addr, target_prefixlen, icon_factory):
+        items = []
+        if target_prefixlen is None or target_prefixlen <= addr.prefixlen or target_prefixlen > addr.max_prefixlen:
+            items.append(StandardItem(
+                id="sc-rand-invalid",
+                text=f"Invalid /{target_prefixlen} for random sample",
+                subtext=f"Target prefix must be between /{addr.prefixlen + 1} and /{addr.max_prefixlen}",
+                icon_factory=icon_factory,
+            ))
+            return items
+
+        diff = target_prefixlen - addr.prefixlen
+        # Cap requested count to the size of the search space when it's small,
+        # so we don't loop forever trying to dedupe.
+        space = 1 << diff if diff < 30 else self.num_results
+        want = min(self.num_results, space)
+        seen = set()
+        attempts = 0
+        while len(seen) < want and attempts < want * 4:
+            attempts += 1
+            sample = self._random_sample(addr, target_prefixlen)
+            key = str(sample)
+            if key in seen:
+                continue
+            seen.add(key)
+            items.append(StandardItem(
+                id=f"sc-rand-{addr}-{key}",
+                text=key,
+                subtext=f"Random /{target_prefixlen} in {addr}",
+                icon_factory=icon_factory,
+                actions=[Action(f"copy-{key}", f"Copy {key}", lambda r=key: setClipboardText(r))],
+            ))
+        return items
+
+    def _mode_next_prev(self, addr, mode, icon_factory):
+        items = []
+        for i in range(1, self.num_results + 1):
+            offset = i * addr.num_addresses
+            if mode == "prev":
+                offset = -offset
+
+            try:
+                new_net = ipaddress.ip_network(f"{addr[0] + offset}/{addr.prefixlen}", strict=False)
+            except (ValueError, ipaddress.AddressValueError):
+                items.append(StandardItem(
+                    id=f"sc-{mode}-edge",
+                    text=f"No more {mode} subnets — address space edge reached",
+                    icon_factory=icon_factory,
+                    subtext=f"Stopped after {ordinal(i - 1)} /{addr.prefixlen} subnet" if i > 1 else f"{addr} is at the edge"
+                ))
+                break
+            items.append(StandardItem(
+                id=f"sc-{mode}-{addr}-{i}", text=str(new_net), icon_factory=icon_factory,
+                subtext=f"{mode} {ordinal(i)} /{addr.prefixlen} subnet",
+                actions=[Action(f"copy-{mode}-{i}", f"Copy Network {new_net}", lambda r=str(new_net): setClipboardText(r))]
+            ))
+        return items
+
+    @staticmethod
+    def _mode_usage(query_string, icon_factory):
+        return [StandardItem(
+            id="sc-usage",
+            text="Usage: <prefix> {sub|sup|next|prev|rand|/YY [rand]} [N]",
+            icon_factory=icon_factory,
+            subtext=f"Query was: {query_string}  —  type 'sc list' for well-known prefixes"
+        )]
+
+    def _handle_advanced_query(self, query_string, addr):
+        icon_factory = self._icon_factory_for(addr)
+        mode, level, target_prefixlen = self._parse_advanced_query(query_string, addr)
 
         if mode == "sub":
-            if level > (addr.max_prefixlen - addr.prefixlen):
-                level = addr.max_prefixlen - addr.prefixlen
-                items.append(StandardItem(id="sc-cant-go-lower", icon_factory=icon_factory, text=f"Can't go lower than /{addr.max_prefixlen} - {ordinal(level)} level"))
-            total = 1 << level
-            if total > self.num_results:
-                items.append(StandardItem(
-                    id="sc-sub-truncated",
-                    text=f"{total:,} /{addr.prefixlen + level} subnets — showing first {self.num_results}",
-                    subtext="Increase 'Number of results' in plugin settings, or use 'rand' for random samples",
-                    icon_factory=icon_factory,
-                ))
-            for idx, i in enumerate(addr.subnets(prefixlen_diff=level)):
-                if idx >= self.num_results:
-                    break
-                items.append(StandardItem(
-                    id=f"sc-subnet-{i}", text=str(i), subtext=f"{ordinal(idx + 1)} Subnet",
-                    icon_factory=icon_factory,
-                    actions=[Action(f"copy-{i}", f"Copy network {i}", lambda r=str(i): setClipboardText(r))]
-                ))
+            return self._mode_sub(addr, level, icon_factory)
         elif mode == "sup":
-            if level > addr.prefixlen:
-                level = addr.prefixlen
-                items.append(StandardItem(id="sc-cant-go-higher", icon_factory=icon_factory, text=f"Can't go higher than /0 - {ordinal(level)} level"))
-
-            supernet = addr.supernet(prefixlen_diff=level)
-            items.append(StandardItem(
-                id=f"sc-supernet-{supernet}", text=str(supernet), icon_factory=icon_factory,
-                subtext=f"{ordinal(level)} level Supernet",
-                actions=[Action(f"copy-{supernet}", f"Copy network {supernet}", lambda r=str(supernet): setClipboardText(r))]
-            ))
+            return self._mode_sup(addr, level, icon_factory)
         elif mode == "rand":
-            if target_prefixlen is None or target_prefixlen <= addr.prefixlen or target_prefixlen > addr.max_prefixlen:
-                items.append(StandardItem(
-                    id="sc-rand-invalid",
-                    text=f"Invalid /{target_prefixlen} for random sample",
-                    subtext=f"Target prefix must be between /{addr.prefixlen + 1} and /{addr.max_prefixlen}",
-                    icon_factory=icon_factory,
-                ))
-            else:
-                diff = target_prefixlen - addr.prefixlen
-                # Cap requested count to the size of the search space when it's small,
-                # so we don't loop forever trying to dedupe.
-                space = 1 << diff if diff < 30 else self.num_results
-                want = min(self.num_results, space)
-                seen = set()
-                attempts = 0
-                while len(seen) < want and attempts < want * 4:
-                    attempts += 1
-                    sample = self._random_sample(addr, target_prefixlen)
-                    key = str(sample)
-                    if key in seen:
-                        continue
-                    seen.add(key)
-                    items.append(StandardItem(
-                        id=f"sc-rand-{addr}-{key}",
-                        text=key,
-                        subtext=f"Random /{target_prefixlen} in {addr}",
-                        icon_factory=icon_factory,
-                        actions=[Action(f"copy-{key}", f"Copy {key}", lambda r=key: setClipboardText(r))],
-                    ))
-        elif mode in ["next", "prev"]:
-            for i in range(1, self.num_results + 1):
-                offset = i * addr.num_addresses
-                if mode == "prev":
-                    offset = -offset
-
-                try:
-                    new_net = ipaddress.ip_network(f"{addr[0] + offset}/{addr.prefixlen}", strict=False)
-                except (ValueError, ipaddress.AddressValueError):
-                    items.append(StandardItem(
-                        id=f"sc-{mode}-edge",
-                        text=f"No more {mode} subnets — address space edge reached",
-                        icon_factory=icon_factory,
-                        subtext=f"Stopped after {ordinal(i - 1)} /{addr.prefixlen} subnet" if i > 1 else f"{addr} is at the edge"
-                    ))
-                    break
-                items.append(StandardItem(
-                    id=f"sc-{mode}-{addr}-{i}", text=str(new_net), icon_factory=icon_factory,
-                    subtext=f"{mode} {ordinal(i)} /{addr.prefixlen} subnet",
-                    actions=[Action(f"copy-{mode}-{i}", f"Copy Network {new_net}", lambda r=str(new_net): setClipboardText(r))]
-                ))
+            return self._mode_rand(addr, target_prefixlen, icon_factory)
+        elif mode in ("next", "prev"):
+            return self._mode_next_prev(addr, mode, icon_factory)
         else:
-            items.append(StandardItem(
-                id="sc-usage",
-                text="Usage: <prefix> {sub|sup|next|prev|rand|/YY [rand]} [N]",
-                icon_factory=icon_factory,
-                subtext=f"Query was: {query_string}  —  type 'sc list' for well-known prefixes"
-            ))
-        
-        return items
+            return self._mode_usage(query_string, icon_factory)
 
     def items(self, ctx):
         query_string = ctx.query
