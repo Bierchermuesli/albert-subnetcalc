@@ -24,8 +24,15 @@ A curated reference: RFC 5737 TEST-NETs, RFC 3849 v6 docs, RFC 1918, RFC 6598 CG
 
 Tab on any row rewrites the input to that prefix so you can keep working.
 
+<img width="650" alt="image" src="https://github.com/user-attachments/assets/9c5c5622-72a3-4a45-b156-994f9a3b1674" />
+
+
 ##### Random subnets — `rand`
 `sc 2001:db8::/32 /48 rand` returns N (configurable) random `/48`s within `/32`. Uses `random.getrandbits` so samples are spread across the entire space. Bare `<prefix> rand` defaults to one level lower.
+
+<img width="650" alt="image" src="https://github.com/user-attachments/assets/f4847243-6c38-4895-ba68-7defb8a0a238" />
+<img width="650"  alt="image" src="https://github.com/user-attachments/assets/136cfddc-33c0-4949-9af3-ec9ddd0df6a3" />
+
 
 ##### Subnetting
 - `sc 203.0.113.0/24 sub 5` — split into `/29`s (5 levels lower). Capped at `num_results`; a banner row tells you how many subnets exist in total and suggests `rand` for sampling huge spaces.
@@ -36,6 +43,8 @@ Tab on any row rewrites the input to that prefix so you can keep working.
 
 ##### Same-size neighbours
 `sc 203.0.113.0/24 next|prev` — N adjacent subnets, with safe stop at the address-space edge (no crash on `0.0.0.0/24 prev`).
+
+<img width="650" alt="image" src="https://github.com/user-attachments/assets/1a352bc9-b3e7-4fce-ba96-f6b374659ff7" />
 
 ##### IPv6 details
 Network/compressed/exploded/last/netmask. Hosts get reverse pointer, hex, binary. **EUI-64 MAC extraction** when the interface ID has the `ff:fe` marker.
